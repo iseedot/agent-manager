@@ -1,0 +1,139 @@
+import type { AgentRow } from "../shared/contracts";
+import { isCliAvailable } from "./cli";
+import { resolveMcpEndpoint } from "./daemon-mcp";
+import { scanAgentProcesses } from "./processes";
+
+interface RawPlacement {
+  workspaceName?: unknown;
+  projectName?: unknown;
+}
+
+interface RawAgent {
+  id?: unknown;
+  shortId?: unknown;
+  title?: unknown;
+  provider?: unknown;
+  model?: unknown;
+  status?: unknown;
+  archivedAt?: unknown;
+  workspaceId?: unknown;
+  cwd?: unknown;
+  updatedAt?: unknown;
+}
+
+export interface OverviewResult {
+  agents: AgentRow[];
+  totals: {
+    total: number;
+    holdingProcess: number;
+    closed: number;
+    archived: number;
+    rssBytes: number;
+  };
+  endpoint: string | null;
+  cliAvailable: boolean;
+  warning: string | null;
+}
+
+export interface PaseoLike {
+  agents: { list(options?: unknown): Promise<{ entries?: unknown }> };
+}
+
+export async function buildOverview(paseo: PaseoLike): Promise<OverviewResult> {
+  const agentPage = await paseo.agents.list({
+    filter: { includeArchived: true },
+    sort: [{ key: "updated_at", direction: "desc" }],
+    page: { limit: 200 },
+  });
+
+  const entries = asArray(agentPage?.entries);
+  const agents: AgentRow[] = [];
+  const expectedIds: string[] = [];
+
+  for (const entry of entries) {
+    const raw = (entry as { agent?: unknown }).agent as RawAgent | undefined;
+    const placement = (entry as { project?: unknown }).project as RawPlacement | undefined;
+    const id = str(raw?.id);
+    if (!raw || !id) {
+      continue;
+    }
+    const workspaceId = str(raw.workspaceId);
+    const status = str(raw.status) ?? "unknown";
+    if (status !== "closed") {
+      expectedIds.push(id);
+    }
+    agents.push({
+      id,
+      shortId: str(raw.shortId) ?? id.slice(0, 7),
+      title: str(raw.title) ?? "(untitled)",
+      provider: str(raw.provider) ?? "unknown",
+      model: str(raw.model),
+      status,
+      archived: Boolean(str(raw.archivedAt)),
+      workspaceId,
+      workspaceName: str(placement?.workspaceName) ?? str(placement?.projectName),
+      cwd: str(raw.cwd) ?? "",
+      updatedAt: str(raw.updatedAt),
+      pid: null,
+      rssBytes: null,
+      processCommand: null,
+      isDaemonChild: null,
+    });
+  }
+
+  const [processes, cliAvailable] = await Promise.all([
+    scanAgentProcesses(expectedIds).catch(() => new Map<string, never>()),
+    isCliAvailable().catch(() => false),
+  ]);
+
+  for (const agent of agents) {
+    const process = processes.get(agent.id);
+    if (!process) {
+      continue;
+    }
+    agent.pid = process.pid;
+    agent.rssBytes = process.rssBytes;
+    agent.processCommand = process.command;
+    agent.isDaemonChild = process.isDaemonChild;
+  }
+
+  agents.sort(compareRows);
+
+  const rssBytes = agents.reduce((sum, agent) => sum + (agent.rssBytes ?? 0), 0);
+  return {
+    agents,
+    totals: {
+      total: agents.length,
+      holdingProcess: agents.filter((agent) => agent.pid !== null).length,
+      closed: agents.filter((agent) => agent.status === "closed").length,
+      archived: agents.filter((agent) => agent.archived).length,
+      rssBytes,
+    },
+    endpoint: await resolveMcpEndpoint().catch(() => null),
+    cliAvailable,
+    warning:
+      processes.size === 0 && agents.some((agent) => agent.status !== "closed")
+        ? "No process carrying PASEO_AGENT_ID was found. Process and memory columns need a Linux host."
+        : null,
+  };
+}
+
+function compareRows(left: AgentRow, right: AgentRow): number {
+  const leftLive = left.pid === null ? 1 : 0;
+  const rightLive = right.pid === null ? 1 : 0;
+  if (leftLive !== rightLive) {
+    return leftLive - rightLive;
+  }
+  if ((right.rssBytes ?? 0) !== (left.rssBytes ?? 0)) {
+    return (right.rssBytes ?? 0) - (left.rssBytes ?? 0);
+  }
+  return (right.updatedAt ?? "").localeCompare(left.updatedAt ?? "");
+}
+
+function asArray(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : [];
+}
+
+function str(value: unknown): string | null {
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
