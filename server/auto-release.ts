@@ -1,9 +1,12 @@
-import { mkdir, readFile, readdir, rename, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { readFile, readdir } from "node:fs/promises";
+import { join } from "node:path";
+
+import { listAllAgents, type AgentRecord } from "./agents";
 
 import { beginDaemonClientUse, endDaemonClientUse, getDaemonClient } from "./daemon-client";
 import { killAgentViaDaemonMcp, paseoHome } from "./daemon-mcp";
 import { scanAgentProcesses } from "./processes";
+import { describe, serializeWrite, str, writeJsonAtomic } from "./util";
 
 export interface AutoReleaseState {
   enabled: boolean;
@@ -28,16 +31,6 @@ const DEFAULT_STATE: AutoReleaseState = {
   lastError: null,
   nextRunAt: null,
 };
-
-interface RawAgent {
-  id?: unknown;
-  title?: unknown;
-  status?: unknown;
-  cwd?: unknown;
-  updatedAt?: unknown;
-  requiresAttention?: unknown;
-  archivedAt?: unknown;
-}
 
 let timer: ReturnType<typeof setInterval> | null = null;
 let running = false;
@@ -109,37 +102,34 @@ export async function runAutoRelease(): Promise<AutoReleaseState> {
   let error: string | null = null;
   try {
     const client = await getDaemonClient();
-    const page = await client.fetchAgents({ filter: { includeArchived: true }, page: { limit: 200 } });
-    const entries = Array.isArray(page?.entries) ? (page.entries as Array<{ agent?: RawAgent }>) : [];
+    const agents = await listAllAgents((options) => client.fetchAgents(options as never));
     const processes = await scanAgentProcesses().catch(() => new Map());
     const threshold = state.idleMinutes * 60000;
     const now = Date.now();
 
-    for (const entry of entries) {
-      const agent = entry.agent;
-      const agentId = str(agent?.id);
-      if (!agent || !agentId || !processes.has(agentId)) {
+    for (const agent of agents) {
+      if (!processes.has(agent.id)) {
         continue;
       }
-      if (str(agent.status) === "running") {
+      if (agent.status === "running") {
         continue;
       }
-      if (agent.requiresAttention === true) {
+      if (agent.requiresAttention) {
         skipped += 1;
         continue;
       }
-      const idleSince = await resolveLastActivityAt(agent, agentId);
+      const idleSince = await resolveLastActivityAt(agent, agent.id);
       if (idleSince === null || now - idleSince < threshold) {
         continue;
       }
       try {
-        await killAgentViaDaemonMcp(agentId);
+        await killAgentViaDaemonMcp(agent.id);
         const after = await scanAgentProcesses().catch(() => new Map());
-        if (after.has(agentId)) {
+        if (after.has(agent.id)) {
           skipped += 1;
           continue;
         }
-        released.push({ agentId, title: str(agent.title) });
+        released.push({ agentId: agent.id, title: agent.title });
       } catch (releaseError) {
         error = describe(releaseError);
       }
@@ -164,8 +154,8 @@ export async function runAutoRelease(): Promise<AutoReleaseState> {
   return next;
 }
 
-async function resolveLastActivityAt(agent: RawAgent, agentId: string): Promise<number | null> {
-  const recordPath = await findRecordPath(str(agent.cwd), agentId);
+async function resolveLastActivityAt(agent: AgentRecord, agentId: string): Promise<number | null> {
+  const recordPath = await findRecordPath(agent.cwd, agentId);
   if (recordPath) {
     try {
       const parsed = JSON.parse(await readFile(recordPath, "utf8")) as { lastActivityAt?: unknown };
@@ -177,7 +167,7 @@ async function resolveLastActivityAt(agent: RawAgent, agentId: string): Promise<
       // fall through to the wire timestamp
     }
   }
-  const updatedMs = Date.parse(str(agent.updatedAt) ?? "");
+  const updatedMs = Date.parse(agent.updatedAt ?? "");
   return Number.isFinite(updatedMs) ? updatedMs : null;
 }
 
@@ -222,12 +212,8 @@ async function readStoredState(): Promise<Partial<AutoReleaseState>> {
   }
 }
 
-async function writeState(state: AutoReleaseState): Promise<void> {
-  const target = join(paseoHome(), STATE_PATH);
-  await mkdir(dirname(target), { recursive: true });
-  const temporary = `${target}.${process.pid}.tmp`;
-  await writeFile(temporary, `${JSON.stringify(state, null, 2)}\n`, "utf8");
-  await rename(temporary, target);
+function writeState(state: AutoReleaseState): Promise<void> {
+  return serializeWrite(() => writeJsonAtomic(join(paseoHome(), STATE_PATH), state));
 }
 
 function nextRunAt(stored: Partial<AutoReleaseState>, defaults: AutoReleaseState): string | null {
@@ -246,12 +232,4 @@ function clamp(value: number, min: number, max: number): number {
     return min;
   }
   return Math.min(max, Math.max(min, Math.round(value)));
-}
-
-function str(value: unknown): string | null {
-  return typeof value === "string" && value.length > 0 ? value : null;
-}
-
-function describe(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }

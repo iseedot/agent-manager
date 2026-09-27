@@ -33,16 +33,6 @@ export async function deleteAgentViaCli(agentId: string): Promise<CliResult> {
   return { ok: run.code === 0, output: run.output };
 }
 
-export async function isCliAvailable(): Promise<boolean> {
-  cachedCliAvailability ??= runCli(["--version"]).then(
-    (run) => !run.error && run.code === 0,
-    () => false,
-  );
-  return cachedCliAvailability;
-}
-
-let cachedCliAvailability: Promise<boolean> | null = null;
-
 function runCli(args: string[]): Promise<CliRun> {
   const binary = resolveCliBinary();
   const home = paseoHome();

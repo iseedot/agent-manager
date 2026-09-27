@@ -28,9 +28,9 @@ export async function readDaemonConfig(): Promise<DaemonConfig> {
       daemon?: { listen?: unknown; password?: unknown };
     };
     return {
-      listen: str(parsed.daemon?.listen),
-      version: str(parsed.version),
-      password: str(parsed.daemon?.password),
+      listen: trim(parsed.daemon?.listen),
+      version: trim(parsed.version),
+      password: trim(parsed.daemon?.password),
     };
   } catch {
     return { listen: null, version: null, password: null };
@@ -55,7 +55,7 @@ export async function resolveMcpEndpoint(): Promise<string> {
   return `http://${address.host}:${address.port}/mcp/agents`;
 }
 
-function str(value: unknown): string | null {
+function trim(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
 

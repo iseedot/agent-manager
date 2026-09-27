@@ -6,14 +6,13 @@ import {
   jobStatusRpc,
   overviewRpc,
   releaseManyRpc,
-  releaseRpc,
   workspaceActivateRpc,
   workspaceArchiveRpc,
   workspaceCloseTabsRpc,
   workspaceDeleteRpc,
   workspacesRpc,
 } from "./shared/contracts";
-import { deleteAgents, releaseAgent, releaseAgents } from "./server/actions";
+import { releaseAgents } from "./server/actions";
 import { readAutoReleaseState, startAutoReleaseScheduler, updateAutoReleaseState } from "./server/auto-release";
 import { disposeDaemonClient } from "./server/daemon-client";
 import { paseoHome } from "./server/daemon-mcp";
@@ -30,10 +29,6 @@ import {
 
 export default function contribute(server: PluginServerContext) {
   server.handle(overviewRpc, async (_input, { paseo }) => buildOverview(paseo as unknown as never));
-
-  server.handle(releaseRpc, async ({ agentId, allowSignalFallback }) =>
-    releaseAgent(agentId, { allowSignalFallback: allowSignalFallback !== false }),
-  );
 
   server.handle(releaseManyRpc, async ({ agentIds, allowSignalFallback }) =>
     releaseAgents(agentIds, { allowSignalFallback: allowSignalFallback !== false }),

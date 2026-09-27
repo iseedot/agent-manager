@@ -1,3 +1,7 @@
 node_modules/
 *.log
 .DS_Store
+
+# local-only notes (never pushed)
+requirements.local.md
+*.local.md

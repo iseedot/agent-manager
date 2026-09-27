@@ -13,7 +13,6 @@ const ENV_PREFIX = Buffer.from("PASEO_AGENT_ID=");
 interface Candidate {
   agentId: string;
   pid: number;
-  ppid: number;
   startTimeTicks: number;
   rssBytes: number;
   command: string;
@@ -37,7 +36,7 @@ export async function scanAgentProcesses(): Promise<Map<string, AgentProcessInfo
     await Promise.all(
       entries
         .filter((name) => /^\d+$/.test(name))
-        .map((name) => readCandidate(Number(name))),
+        .map((name) => readCandidate(Number(name), daemonPid)),
     )
   ).filter((candidate): candidate is Candidate => candidate !== null);
 
@@ -52,11 +51,7 @@ export async function scanAgentProcesses(): Promise<Map<string, AgentProcessInfo
   }
 
   for (const [agentId, group] of byAgent) {
-    const direct = group.filter((candidate) => candidate.ppid === daemonPid);
-    if (direct.length === 0) {
-      continue;
-    }
-    const winner = direct.reduce((best, candidate) =>
+    const winner = group.reduce((best, candidate) =>
       candidate.startTimeTicks < best.startTimeTicks ? candidate : best,
     );
     found.set(agentId, {
@@ -70,19 +65,18 @@ export async function scanAgentProcesses(): Promise<Map<string, AgentProcessInfo
   return found;
 }
 
-async function readCandidate(pid: number): Promise<Candidate | null> {
+async function readCandidate(pid: number, daemonPid: number): Promise<Candidate | null> {
   const agentId = await readAgentId(pid);
   if (!agentId) {
     return null;
   }
   const stat = await readStat(pid);
-  if (!stat) {
+  if (!stat || stat.ppid !== daemonPid) {
     return null;
   }
   return {
     agentId,
     pid,
-    ppid: stat.ppid,
     startTimeTicks: stat.startTimeTicks,
     rssBytes: await readResidentBytes(pid),
     command: await readCommand(pid),

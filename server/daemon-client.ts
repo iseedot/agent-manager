@@ -1,6 +1,7 @@
 import { createRequire } from "node:module";
 
 import { readDaemonConfig, resolveDaemonAddress } from "./daemon-mcp";
+import { describe } from "./util";
 
 declare const require: ((specifier: string) => unknown) | undefined;
 
@@ -163,8 +164,4 @@ function runtimeRequire(specifier: string): unknown {
 
 function randomSuffix(): string {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
-}
-
-function describe(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }

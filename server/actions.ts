@@ -1,11 +1,9 @@
+import { readFileSync } from "node:fs";
+
 import { deleteAgentViaCli } from "./cli";
 import { killAgentViaDaemonMcp } from "./daemon-mcp";
 import { scanAgentProcesses, type AgentProcessInfo } from "./processes";
-export interface ReleaseOutcome {
-  ok: boolean;
-  message: string;
-  freedBytes: number | null;
-}
+import { describe } from "./util";
 
 export interface BatchOutcome {
   succeeded: string[];
@@ -15,32 +13,6 @@ export interface BatchOutcome {
 interface KillAttempt {
   error: string | null;
   note: string | null;
-}
-
-export async function releaseAgent(
-  agentId: string,
-  options: { allowSignalFallback: boolean },
-): Promise<ReleaseOutcome> {
-  const target = await findProcess(agentId);
-  if (!target) {
-    return { ok: true, message: "No runtime process to release.", freedBytes: null };
-  }
-
-  const attempt = await killOrSignal(agentId, target, options.allowSignalFallback);
-  if (attempt.error) {
-    return { ok: false, message: attempt.error, freedBytes: null };
-  }
-
-  const exited = await waitForProcessesExit([target.pid]);
-  const remaining = await scanAgentProcesses().catch(() => new Map<string, AgentProcessInfo>());
-  if (!exited.has(target.pid) && remaining.has(agentId)) {
-    return { ok: false, message: STILL_RUNNING, freedBytes: null };
-  }
-  return {
-    ok: true,
-    message: attempt.note ?? `Released pid ${target.pid}. The session stays in its workspace as closed.`,
-    freedBytes: target.rssBytes,
-  };
 }
 
 export async function releaseAgents(
@@ -111,14 +83,8 @@ async function killOrSignal(
     return { error: null, note: null };
   } catch (error) {
     const reason = describe(error);
-    if (!allowSignalFallback) {
+    if (!allowSignalFallback || !target.isDaemonChild) {
       return { error: reason, note: null };
-    }
-    if (!target.isDaemonChild) {
-      return {
-        error: `${reason} The matched pid ${target.pid} is not a daemon child, so no signal was sent.`,
-        note: null,
-      };
     }
     const outcome = await signalFallback(agentId, target.pid, reason);
     return outcome.ok ? { error: null, note: outcome.message } : { error: outcome.message, note: null };
@@ -139,16 +105,9 @@ async function signalFallback(
   return exited.has(pid)
     ? {
         ok: true,
-        message: `Sent SIGTERM to pid ${pid}. The daemon may still report the agent as idle until it is reloaded (paseo agent reload ${agentId.slice(0, 7)}). Reason: ${reason}`,
+        message: `Sent SIGTERM to pid ${pid}. The daemon may still report the session as idle until it is reloaded (paseo agent reload ${agentId.slice(0, 7)}). Reason: ${reason}`,
       }
     : { ok: false, message: `SIGTERM was sent but pid ${pid} is still running. Reason: ${reason}` };
-}
-
-async function findProcess(agentId: string): Promise<AgentProcessInfo | null> {
-  const before = await scanAgentProcesses().catch(
-    () => new Map<string, AgentProcessInfo>(),
-  );
-  return before.get(agentId) ?? null;
 }
 
 async function waitForProcessesExit(pids: number[], timeoutMs = 3000): Promise<Set<number>> {
@@ -173,17 +132,26 @@ async function waitForProcessesExit(pids: number[], timeoutMs = 3000): Promise<S
 
 function isRunning(pid: number): boolean {
   try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
+    const raw = readFileSync(`/proc/${pid}/stat`, "latin1");
+    const close = raw.lastIndexOf(41);
+    if (close < 0) {
+      return true;
+    }
+    const state = raw.slice(close + 2, close + 3);
+    return state !== "Z" && state !== "X";
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return false;
+    }
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
   }
 }
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function describe(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
