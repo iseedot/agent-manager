@@ -1,42 +1,65 @@
 import type { PluginSurfaceProps } from "@getpaseo/plugin/client";
 import { getPaseoClient, useHosts, useRpc } from "@getpaseo/plugin/client";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ActivityIndicator, Pressable, ScrollView, Text, View } from "react-native";
 
 import {
-  archiveManyRpc,
-  deleteManyRpc,
+  autoReleaseSetRpc,
+  autoReleaseStateRpc,
   overviewRpc,
   releaseManyRpc,
-  releaseRpc,
-  type AgentRow,
+  workspaceArchiveRpc,
+  workspaceCloseTabsRpc,
+  workspaceDeleteRpc,
 } from "../shared/contracts";
+import {
+  JobLine,
+  activeAtPath,
+  isLastActiveAtPath,
+  pathGroups,
+  reopenCandidate,
+  useWorkspaceJobs,
+  useWorkspaces,
+  workspaceLabel,
+  workspaceStats,
+} from "./workspaces";
 
 const EMPTY_HOSTS: readonly { serverId: string; label: string; status: string }[] = [];
 
 interface HostSummary {
   serverId: string;
   label: string;
-  status: string;
   total: number | null;
   running: number | null;
   archived: number | null;
   error: string | null;
 }
 
-export function AgentManagerPanel({ theme, host, layout, navigation }: PluginSurfaceProps) {
+export function AgentManagerPanel({ theme, host, layout }: PluginSurfaceProps) {
   const queryClient = useQueryClient();
   const fetchOverview = useRpc(overviewRpc);
-  const releaseOne = useRpc(releaseRpc);
   const releaseMany = useRpc(releaseManyRpc);
-  const archiveMany = useRpc(archiveManyRpc);
-  const deleteMany = useRpc(deleteManyRpc);
+  const archiveWorkspace = useRpc(workspaceArchiveRpc);
+  const closeWorkspaceTabs = useRpc(workspaceCloseTabsRpc);
+  const deleteWorkspace = useRpc(workspaceDeleteRpc);
+  const readAutoRelease = useRpc(autoReleaseStateRpc);
+  const writeAutoRelease = useRpc(autoReleaseSetRpc);
 
-  const [onlyLive, setOnlyLive] = useState(false);
-  const [selected, setSelected] = useState<readonly string[]>([]);
-  const [pendingDelete, setPendingDelete] = useState<readonly string[] | null>(null);
+  const [pendingArchive, setPendingArchive] = useState<string | null>(null);
+  const [pendingWorkspaceDelete, setPendingWorkspaceDelete] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<string | null>(null);
+  const [cooling, setCooling] = useState(false);
+  const cooldownTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const workspaces = useWorkspaces(host.id);
+  const jobs = useWorkspaceJobs(host.id);
+
+  const autoRelease = useQuery({
+    queryKey: ["agent-manager", "auto-release", host.id],
+    queryFn: () => readAutoRelease({}),
+    refetchInterval: 60000,
+  });
 
   const hostsSupported = typeof useHosts === "function";
   const hostList = hostsSupported ? useHosts() : EMPTY_HOSTS;
@@ -72,99 +95,147 @@ export function AgentManagerPanel({ theme, host, layout, navigation }: PluginSur
             .filter((agent): agent is RawListedAgent => Boolean(agent));
           summaries.push({
             ...entry,
-            status: "online",
             total: agents.length,
             running: agents.filter((agent) => agent.status === "running").length,
             archived: agents.filter((agent) => Boolean(agent.archivedAt)).length,
             error: null,
           });
         } catch (error) {
-          summaries.push({ ...entry, status: "error", total: null, running: null, archived: null, error: message(error) });
+          summaries.push({ ...entry, total: null, running: null, archived: null, error: message(error) });
         }
       }
       return summaries;
     },
   });
 
-  const invalidate = useCallback(async () => {
+  const refreshAll = useCallback(async () => {
     await queryClient.invalidateQueries({ queryKey: ["agent-manager"] });
   }, [queryClient]);
 
-  const release = useMutation({
-    mutationFn: (agentId: string) => releaseOne({ agentId, allowSignalFallback: true }),
-    onSuccess: async (result) => {
-      setFeedback(result.message);
-      await invalidate();
-    },
-    onError: (error) => setFeedback(`Failed: ${message(error)}`),
-  });
-
-  const batchRelease = useMutation({
-    mutationFn: (agentIds: readonly string[]) =>
-      releaseMany({ agentIds: [...agentIds], allowSignalFallback: true }),
-    onSuccess: async (result) => {
-      setFeedback(summarize(`Released ${result.released.length}`, formatBytes(result.freedBytes), result.failed));
-      setSelected([]);
-      await invalidate();
-    },
-    onError: (error) => setFeedback(`Failed: ${message(error)}`),
-  });
-
-  const batchArchive = useMutation({
-    mutationFn: (agentIds: readonly string[]) => archiveMany({ agentIds: [...agentIds] }),
-    onSuccess: async (result) => {
-      setFeedback(summarize(`Archived ${result.succeeded.length}`, null, result.failed));
-      setSelected([]);
-      await invalidate();
-    },
-    onError: (error) => setFeedback(`Failed: ${message(error)}`),
-  });
-
-  const batchDelete = useMutation({
-    mutationFn: (agentIds: readonly string[]) => deleteMany({ agentIds: [...agentIds] }),
-    onSuccess: async (result) => {
-      setFeedback(summarize(`Deleted ${result.succeeded.length}`, null, result.failed));
-      setSelected([]);
-      setPendingDelete(null);
-      await invalidate();
-    },
-    onError: (error) => setFeedback(`Failed: ${message(error)}`),
-  });
-
-  const data = overview.data;
-  const agents = useMemo(() => {
-    const rows = data?.agents ?? [];
-    return onlyLive ? rows.filter((row) => row.pid !== null) : rows;
-  }, [data?.agents, onlyLive]);
-
-  const idleWithProcess = useMemo(
-    () => (data?.agents ?? []).filter((row) => row.pid !== null && row.status !== "running"),
-    [data?.agents],
-  );
-
-  const selectedSet = useMemo(() => new Set(selected), [selected]);
-  const selectedRows = useMemo(
-    () => (data?.agents ?? []).filter((row) => selectedSet.has(row.id)),
-    [data?.agents, selectedSet],
-  );
-
-  const busy =
-    release.isPending ||
-    batchRelease.isPending ||
-    batchArchive.isPending ||
-    batchDelete.isPending;
-
-  const toggle = useCallback((agentId: string) => {
-    setPendingDelete(null);
-    setSelected((current) =>
-      current.includes(agentId) ? current.filter((id) => id !== agentId) : [...current, agentId],
-    );
+  const coolDown = useCallback(() => {
+    setCooling(true);
+    if (cooldownTimer.current) {
+      clearTimeout(cooldownTimer.current);
+    }
+    cooldownTimer.current = setTimeout(() => setCooling(false), 1200);
   }, []);
 
-  const selectVisible = useCallback(() => {
-    setPendingDelete(null);
-    setSelected(agents.map((row) => row.id));
-  }, [agents]);
+  useEffect(
+    () => () => {
+      if (cooldownTimer.current) {
+        clearTimeout(cooldownTimer.current);
+      }
+    },
+    [],
+  );
+
+  const jobId = jobs.job?.jobId ?? null;
+  const jobFinished = jobs.job?.finished === true;
+
+  useEffect(() => {
+    if (jobFinished) {
+      coolDown();
+    }
+  }, [jobId, jobFinished, coolDown]);
+
+  const agentsOf = useCallback(
+    (workspaceId: string) => (overview.data?.agents ?? []).filter((row) => row.workspaceId === workspaceId),
+    [overview.data?.agents],
+  );
+
+  const releaseWorkspace = useMutation({
+    mutationFn: async (workspaceId: string) => {
+      const agentIds = agentsOf(workspaceId)
+        .filter((row) => row.pid !== null)
+        .map((row) => row.id);
+      return releaseMany({ agentIds, allowSignalFallback: true });
+    },
+    onSuccess: async (result) => {
+      setFeedback(summarize(`Released ${result.released.length}`, formatBytes(result.freedBytes), result.failed));
+      coolDown();
+      await refreshAll();
+    },
+    onError: (error) => setFeedback(`Failed: ${message(error)}`),
+  });
+
+  const releaseIdle = useMutation({
+    mutationFn: () => {
+      const agentIds = idleAgents.map((row) => row.id);
+      return releaseMany({ agentIds, allowSignalFallback: true });
+    },
+    onSuccess: async (result) => {
+      setFeedback(summarize(`Released ${result.released.length}`, formatBytes(result.freedBytes), result.failed));
+      coolDown();
+      await refreshAll();
+    },
+    onError: (error) => setFeedback(`Failed: ${message(error)}`),
+  });
+
+  const toggleAutoRelease = useMutation({
+    mutationFn: (input: { enabled?: boolean; runNow?: boolean }) => writeAutoRelease(input),
+    onSuccess: async (state) => {
+      setFeedback(
+        state.enabled
+          ? `Auto-release is on · every ${state.intervalMinutes} min · idle over ${state.idleMinutes} min`
+          : "Auto-release is off",
+      );
+      coolDown();
+      await refreshAll();
+    },
+    onError: (error) => setFeedback(`Failed: ${message(error)}`),
+  });
+
+  const archiveWorkspaceMutation = useMutation({
+    mutationFn: (input: { workspaceId: string; confirmLastActive: boolean }) => archiveWorkspace(input),
+    onSuccess: async (result) => {
+      setPendingArchive(null);
+      setFeedback(result.refused ? `Blocked: ${result.message}` : result.ok ? result.message : `Failed: ${result.message}`);
+      coolDown();
+      await refreshAll();
+    },
+    onError: (error) => setFeedback(`Failed: ${message(error)}`),
+  });
+
+  const closeTabsMutation = useMutation({
+    mutationFn: (workspaceId: string) => closeWorkspaceTabs({ workspaceId }),
+    onSuccess: async (result) => {
+      setFeedback(result.message);
+      coolDown();
+      await refreshAll();
+    },
+    onError: (error) => setFeedback(`Failed: ${message(error)}`),
+  });
+
+  const deleteWorkspaceMutation = useMutation({
+    mutationFn: (workspaceId: string) => deleteWorkspace({ workspaceId }),
+    onSuccess: async (result) => {
+      setPendingWorkspaceDelete(null);
+      setFeedback(result.ok ? result.message : `Failed: ${result.message}`);
+      coolDown();
+      await refreshAll();
+    },
+    onError: (error) => setFeedback(`Failed: ${message(error)}`),
+  });
+
+  const busy =
+    releaseWorkspace.isPending ||
+    releaseIdle.isPending ||
+    toggleAutoRelease.isPending ||
+    archiveWorkspaceMutation.isPending ||
+    closeTabsMutation.isPending ||
+    deleteWorkspaceMutation.isPending ||
+    jobs.busy ||
+    cooling;
+
+  const workspaceRows = workspaces.data?.workspaces ?? [];
+  const activeWorkspaces = useMemo(() => workspaceRows.filter((row) => !row.archivedAt), [workspaceRows]);
+  const archivedWorkspaces = useMemo(() => workspaceRows.filter((row) => row.archivedAt), [workspaceRows]);
+  const idleAgents = useMemo(
+    () => (overview.data?.agents ?? []).filter((row) => row.pid !== null && row.status !== "running"),
+    [overview.data?.agents],
+  );
+  const sharedPaths = useMemo(() => pathGroups(workspaceRows), [workspaceRows]);
+  const autoState = autoRelease.data;
 
   const styles = useMemo(
     () => ({
@@ -172,44 +243,15 @@ export function AgentManagerPanel({ theme, host, layout, navigation }: PluginSur
       summary: { color: theme.colors.foreground, fontSize: 15, fontWeight: "600" as const },
       dim: { color: theme.colors.foregroundMuted, fontSize: 13, marginTop: 4 },
       toolbar: { flexDirection: "row" as const, flexWrap: "wrap" as const, gap: 8, marginTop: 12, marginBottom: 12 },
-      chip: { paddingHorizontal: 12, paddingVertical: 8, borderRadius: 8, backgroundColor: theme.colors.surface2 },
-      chipActive: { backgroundColor: theme.colors.accent },
-      chipDanger: { backgroundColor: theme.colors.statusDanger },
-      chipDisabled: { opacity: 0.4 },
-      chipText: { color: theme.colors.foreground, fontSize: 13 },
-      chipTextActive: { color: theme.colors.accentForeground, fontSize: 13 },
-      chipTextDanger: { color: theme.colors.accentForeground, fontSize: 13 },
-      confirm: {
-        borderWidth: 1,
-        borderColor: theme.colors.statusDanger,
-        borderRadius: 8,
-        padding: 12,
-        gap: 8,
-        marginBottom: 12,
-      },
-      confirmText: { color: theme.colors.foreground, fontSize: 13 },
       sectionTitle: { color: theme.colors.foreground, fontSize: 13, fontWeight: "600" as const, marginTop: 16 },
-      hostRow: {
-        flexDirection: "row" as const,
-        alignItems: "center" as const,
-        gap: 8,
-        paddingVertical: 6,
+      wsRow: {
+        borderTopWidth: 1,
+        borderTopColor: theme.colors.border,
+        paddingVertical: 10,
+        gap: 6,
       },
-      row: { borderTopWidth: 1, borderTopColor: theme.colors.border, paddingVertical: 10, gap: 6 },
-      rowHeader: { flexDirection: "row" as const, alignItems: "center" as const, gap: 8 },
-      checkbox: {
-        width: 22,
-        height: 22,
-        borderRadius: 6,
-        borderWidth: 1,
-        borderColor: theme.colors.border,
-        alignItems: "center" as const,
-        justifyContent: "center" as const,
-        backgroundColor: theme.colors.surface2,
-      },
-      checkboxOn: { backgroundColor: theme.colors.accent, borderColor: theme.colors.accent },
-      checkboxText: { color: theme.colors.accentForeground, fontSize: 13 },
-      title: { color: theme.colors.foreground, fontSize: 14, fontWeight: "600" as const, flexShrink: 1 },
+      wsHeaderRow: { flexDirection: "row" as const, alignItems: "center" as const, gap: 8 },
+      wsTitle: { color: theme.colors.foreground, fontSize: 14, fontWeight: "600" as const, flexShrink: 1 },
       badge: { paddingHorizontal: 8, paddingVertical: 2, borderRadius: 999, backgroundColor: theme.colors.surface2 },
       badgeText: { color: theme.colors.foregroundMuted, fontSize: 11 },
       meta: { color: theme.colors.foregroundMuted, fontSize: 12 },
@@ -219,7 +261,18 @@ export function AgentManagerPanel({ theme, host, layout, navigation }: PluginSur
       actionDanger: { backgroundColor: theme.colors.statusDanger },
       actionText: { color: theme.colors.foreground, fontSize: 12 },
       actionTextOn: { color: theme.colors.accentForeground, fontSize: 12 },
+      disabled: { opacity: 0.4 },
+      wsConfirm: {
+        borderWidth: 1,
+        borderColor: theme.colors.statusDanger,
+        borderRadius: 8,
+        padding: 10,
+        gap: 8,
+        marginTop: 4,
+      },
+      confirmText: { color: theme.colors.foreground, fontSize: 13 },
       empty: { color: theme.colors.foregroundMuted, fontSize: 13, paddingVertical: 20 },
+      hostRow: { flexDirection: "row" as const, alignItems: "center" as const, gap: 8, paddingVertical: 6 },
       feedback: {
         color: theme.colors.foregroundMuted,
         fontSize: 12,
@@ -233,7 +286,7 @@ export function AgentManagerPanel({ theme, host, layout, navigation }: PluginSur
     [theme, layout.compact],
   );
 
-  if (overview.isLoading && !data) {
+  if (workspaces.isLoading && !workspaces.data) {
     return (
       <View style={styles.screen}>
         <ActivityIndicator color={theme.colors.accent} />
@@ -241,162 +294,259 @@ export function AgentManagerPanel({ theme, host, layout, navigation }: PluginSur
     );
   }
 
-  if (overview.isError && !data) {
+  if (workspaces.isError && !workspaces.data) {
     return (
       <View style={styles.screen}>
-        <Text style={styles.empty}>Failed to read agents: {message(overview.error)}</Text>
+        <Text style={styles.empty}>Failed to read workspaces: {message(workspaces.error)}</Text>
       </View>
     );
   }
 
-  const selectedCount = selected.length;
-
   return (
     <View style={styles.screen}>
       <Text style={styles.summary}>
-        {data?.totals.total ?? 0} sessions · {data?.totals.holdingProcess ?? 0} holding a process ·{" "}
-        {formatBytes(data?.totals.rssBytes ?? 0)}
+        {workspaceRows.length} workspaces · {activeWorkspaces.length} active · {archivedWorkspaces.length} archived
       </Text>
       <Text style={styles.dim}>
-        closed {data?.totals.closed ?? 0} · archived {data?.totals.archived ?? 0} · release via{" "}
-        {data?.endpoint ?? "unavailable"} · delete via {data?.cliAvailable ? "paseo CLI" : "unavailable"}
-      </Text>
-      <Text style={styles.dim}>
-        Loaded at {formatLoadedAt(overview.dataUpdatedAt)}. This panel reads on open and on Refresh only.
+        {overview.data?.totals.total ?? 0} sessions · {overview.data?.totals.holdingProcess ?? 0} holding a process ·{" "}
+        {formatBytes(overview.data?.totals.rssBytes ?? 0)}
       </Text>
 
       <View style={styles.toolbar}>
         <Pressable
           accessibilityRole="button"
-          style={[styles.chip, onlyLive ? styles.chipActive : null]}
-          onPress={() => setOnlyLive((value) => !value)}
+          disabled={busy || idleAgents.length === 0}
+          style={[styles.action, styles.actionPrimary, busy || idleAgents.length === 0 ? styles.disabled : null]}
+          onPress={() => {
+            setFeedback(null);
+            releaseIdle.mutate();
+          }}
         >
-          <Text style={onlyLive ? styles.chipTextActive : styles.chipText}>
-            Only holding a process ({data?.totals.holdingProcess ?? 0})
-          </Text>
+          <Text style={styles.actionTextOn}>Release idle everywhere ({idleAgents.length})</Text>
         </Pressable>
-        <Pressable accessibilityRole="button" style={styles.chip} onPress={() => void invalidate()}>
-          <Text style={styles.chipText}>{overview.isFetching ? "Refreshing…" : "Refresh"}</Text>
+        <Pressable accessibilityRole="button" style={styles.action} onPress={() => void refreshAll()}>
+          <Text style={styles.actionText}>{workspaces.isFetching || overview.isFetching ? "Refreshing…" : "Refresh"}</Text>
         </Pressable>
-        <Pressable accessibilityRole="button" style={styles.chip} onPress={selectVisible}>
-          <Text style={styles.chipText}>Select visible ({agents.length})</Text>
-        </Pressable>
-        {selectedCount > 0 ? (
-          <Pressable accessibilityRole="button" style={styles.chip} onPress={() => setSelected([])}>
-            <Text style={styles.chipText}>Clear selection</Text>
-          </Pressable>
-        ) : null}
       </View>
 
       <View style={styles.toolbar}>
         <Pressable
           accessibilityRole="button"
-          disabled={busy || idleWithProcess.length === 0}
-          style={[styles.chip, styles.chipActive, busy || idleWithProcess.length === 0 ? styles.chipDisabled : null]}
-          onPress={() => {
-            setFeedback(null);
-            batchRelease.mutate(idleWithProcess.map((row) => row.id));
-          }}
+          disabled={busy || !autoState}
+          style={[
+            styles.action,
+            autoState?.enabled ? styles.actionPrimary : null,
+            busy || !autoState ? styles.disabled : null,
+          ]}
+          onPress={() => toggleAutoRelease.mutate({ enabled: !autoState?.enabled })}
         >
-          <Text style={styles.chipTextActive}>Release all idle ({idleWithProcess.length})</Text>
+          <Text style={autoState?.enabled ? styles.actionTextOn : styles.actionText}>
+            Auto-release idle tabs: {autoState?.enabled ? "On" : "Off"}
+          </Text>
         </Pressable>
         <Pressable
           accessibilityRole="button"
-          disabled={busy || selectedCount === 0}
-          style={[styles.chip, styles.chipActive, busy || selectedCount === 0 ? styles.chipDisabled : null]}
+          disabled={busy || !autoState}
+          style={[styles.action, busy || !autoState ? styles.disabled : null]}
           onPress={() => {
             setFeedback(null);
-            batchRelease.mutate(selected);
+            toggleAutoRelease.mutate({ runNow: true });
           }}
         >
-          <Text style={styles.chipTextActive}>Release selected ({selectedCount})</Text>
-        </Pressable>
-        <Pressable
-          accessibilityRole="button"
-          disabled={busy || selectedCount === 0}
-          style={[styles.chip, busy || selectedCount === 0 ? styles.chipDisabled : null]}
-          onPress={() => {
-            setFeedback(null);
-            batchArchive.mutate(selected);
-          }}
-        >
-          <Text style={styles.chipText}>Archive selected</Text>
-        </Pressable>
-        <Pressable
-          accessibilityRole="button"
-          disabled={busy || selectedCount === 0}
-          style={[styles.chip, styles.chipDanger, busy || selectedCount === 0 ? styles.chipDisabled : null]}
-          onPress={() => {
-            setFeedback(null);
-            setPendingDelete(selected);
-          }}
-        >
-          <Text style={styles.chipTextDanger}>Delete selected</Text>
-        </Pressable>
-        <Pressable
-          accessibilityRole="button"
-          disabled={!navigation || selectedCount === 0}
-          style={[styles.chip, !navigation || selectedCount === 0 ? styles.chipDisabled : null]}
-          onPress={() => {
-            for (const row of selectedRows) {
-              navigation?.openAgent({ agentId: row.id });
-            }
-          }}
-        >
-          <Text style={styles.chipText}>Open selected</Text>
+          <Text style={styles.actionText}>Check now</Text>
         </Pressable>
       </View>
 
-      {pendingDelete ? (
-        <View style={styles.confirm}>
-          <Text style={styles.confirmText}>
-            Permanently delete {pendingDelete.length} session(s)? This cannot be undone.
-          </Text>
-          <View style={styles.actions}>
-            <Pressable
-              accessibilityRole="button"
-              disabled={busy}
-              style={[styles.action, styles.actionDanger, busy ? styles.chipDisabled : null]}
-              onPress={() => batchDelete.mutate(pendingDelete)}
-            >
-              <Text style={styles.actionTextOn}>Confirm delete</Text>
-            </Pressable>
-            <Pressable accessibilityRole="button" style={styles.action} onPress={() => setPendingDelete(null)}>
-              <Text style={styles.actionText}>Cancel</Text>
-            </Pressable>
-          </View>
-        </View>
-      ) : null}
+      <Text style={styles.meta}>
+        Auto-release checks every {autoState?.intervalMinutes ?? 10} min and releases idle tabs over{" "}
+        {autoState?.idleMinutes ?? 10} min
+        {autoState?.lastRunAt ? ` · last ${formatTime(autoState.lastRunAt)}` : " · not run yet"}
+        {autoState && autoState.lastReleased.length > 0 ? ` · released ${autoState.lastReleased.length}` : ""}
+        {autoState?.lastSkipped ? ` · ${autoState.lastSkipped} skipped` : ""}
+        {autoState?.lastError ? ` · ${autoState.lastError}` : ""}
+      </Text>
+
+      {sharedPaths.map((group) => (
+        <Text key={group.key} style={styles.warning}>
+          {group.rows.length} active workspaces share {group.cwd} — new sessions can land in either.
+        </Text>
+      ))}
 
       <ScrollView>
-        {agents.length === 0 ? (
-          <Text style={styles.empty}>No sessions match.</Text>
-        ) : (
-          agents.map((row) => (
-            <RowView
-              key={row.id}
-              row={row}
-              styles={styles}
-              busy={busy}
-              selected={selectedSet.has(row.id)}
-              onToggle={() => toggle(row.id)}
-              onRelease={() => {
-                setFeedback(null);
-                release.mutate(row.id);
-              }}
-              onArchive={() => {
-                setFeedback(null);
-                batchArchive.mutate([row.id]);
-              }}
-              onDelete={() => {
-                setFeedback(null);
-                setPendingDelete([row.id]);
-              }}
-              onOpen={navigation ? () => navigation.openAgent({ agentId: row.id }) : undefined}
-            />
-          ))
-        )}
+        {workspaceRows.map((row) => {
+          const stats = workspaceStats(overview.data?.agents, row.workspaceId);
+          const archived = Boolean(row.archivedAt);
+          const label = workspaceLabel(row);
+          const lastActive = !archived && isLastActiveAtPath(workspaceRows, row);
+          const candidate = lastActive ? reopenCandidate(workspaceRows, row) : null;
+          const alsoActive = archived
+            ? []
+            : activeAtPath(workspaceRows, row).filter((entry) => entry.workspaceId !== row.workspaceId);
+          return (
+            <View key={row.workspaceId} style={styles.wsRow}>
+              <View style={styles.wsHeaderRow}>
+                <Text style={styles.wsTitle} numberOfLines={1}>
+                  {label}
+                </Text>
+                <View style={styles.badge}>
+                  <Text style={styles.badgeText}>{archived ? "archived" : "active"}</Text>
+                </View>
+                {stats.holding > 0 ? (
+                  <View style={styles.badge}>
+                    <Text style={styles.badgeText}>
+                      {stats.holding} holding · {formatBytes(stats.rssBytes)}
+                    </Text>
+                  </View>
+                ) : null}
+                {!archived && alsoActive.length > 0 ? (
+                  <View style={styles.badge}>
+                    <Text style={styles.badgeText}>+{alsoActive.length} active here</Text>
+                  </View>
+                ) : null}
+              </View>
+              <Text style={styles.meta} numberOfLines={1}>
+                {row.cwd} · {stats.total} sessions · {stats.running} running
+                {row.kind === "directory" ? "" : ` · ${row.kind}`}
+                {row.projectName ? ` · ${row.projectName}` : ""}
+                {row.archivedAt ? ` · archived ${formatTime(row.archivedAt)}` : ""}
+              </Text>
+
+              {archived ? (
+                <View style={styles.actions}>
+                  <Pressable
+                    accessibilityRole="button"
+                    disabled={busy}
+                    style={[styles.action, styles.actionPrimary, busy ? styles.disabled : null]}
+                    onPress={() => {
+                      setFeedback(null);
+                      jobs.activate({ workspaceId: row.workspaceId, workspaceName: label, release: true });
+                    }}
+                  >
+                    <Text style={styles.actionTextOn}>Activate</Text>
+                  </Pressable>
+                  <Pressable
+                    accessibilityRole="button"
+                    disabled={busy}
+                    style={[styles.action, styles.actionDanger, busy ? styles.disabled : null]}
+                    onPress={() => {
+                      setPendingArchive(null);
+                      setPendingWorkspaceDelete(row.workspaceId);
+                    }}
+                  >
+                    <Text style={styles.actionTextOn}>Delete</Text>
+                  </Pressable>
+                </View>
+              ) : (
+                <View style={styles.actions}>
+                  <Pressable
+                    accessibilityRole="button"
+                    disabled={busy || stats.archived === 0}
+                    style={[styles.action, busy || stats.archived === 0 ? styles.disabled : null]}
+                    onPress={() => {
+                      setFeedback(null);
+                      jobs.activate({ workspaceId: row.workspaceId, workspaceName: label, release: true, tabsOnly: true });
+                    }}
+                  >
+                    <Text style={styles.actionText}>Reopen tabs ({stats.archived})</Text>
+                  </Pressable>
+                  <Pressable
+                    accessibilityRole="button"
+                    disabled={busy || stats.holding === 0}
+                    style={[styles.action, styles.actionPrimary, busy || stats.holding === 0 ? styles.disabled : null]}
+                    onPress={() => {
+                      setFeedback(null);
+                      releaseWorkspace.mutate(row.workspaceId);
+                    }}
+                  >
+                    <Text style={styles.actionTextOn}>Release workspace ({stats.holding})</Text>
+                  </Pressable>
+                  <Pressable
+                    accessibilityRole="button"
+                    disabled={busy || stats.open === 0}
+                    style={[styles.action, busy || stats.open === 0 ? styles.disabled : null]}
+                    onPress={() => {
+                      setFeedback(null);
+                      closeTabsMutation.mutate(row.workspaceId);
+                    }}
+                  >
+                    <Text style={styles.actionText}>Close tabs ({stats.open})</Text>
+                  </Pressable>
+                  <Pressable
+                    accessibilityRole="button"
+                    disabled={busy}
+                    style={[styles.action, busy ? styles.disabled : null]}
+                    onPress={() => {
+                      setPendingWorkspaceDelete(null);
+                      setPendingArchive(row.workspaceId);
+                    }}
+                  >
+                    <Text style={styles.actionText}>Archive</Text>
+                  </Pressable>
+                </View>
+              )}
+
+              {pendingArchive === row.workspaceId ? (
+                <View style={styles.wsConfirm}>
+                  <Text style={styles.confirmText}>
+                    Archive "{label}"? {stats.total} session(s) stop now
+                    {stats.running > 0 ? ` (${stats.running} running)` : ""}.
+                  </Text>
+                  {lastActive ? (
+                    <Text style={styles.confirmText}>
+                      Only active workspace at this path — Paseo reopens "
+                      {candidate ? workspaceLabel(candidate) : "an archived one"}" here next time.
+                    </Text>
+                  ) : null}
+                  <Text style={styles.meta}>Close tabs frees the same memory without archiving.</Text>
+                  <View style={styles.actions}>
+                    <Pressable
+                      accessibilityRole="button"
+                      disabled={busy}
+                      style={[styles.action, styles.actionDanger, busy ? styles.disabled : null]}
+                      onPress={() =>
+                        archiveWorkspaceMutation.mutate({ workspaceId: row.workspaceId, confirmLastActive: true })
+                      }
+                    >
+                      <Text style={styles.actionTextOn}>Confirm archive</Text>
+                    </Pressable>
+                    <Pressable accessibilityRole="button" style={styles.action} onPress={() => setPendingArchive(null)}>
+                      <Text style={styles.actionText}>Cancel</Text>
+                    </Pressable>
+                  </View>
+                </View>
+              ) : null}
+
+              {pendingWorkspaceDelete === row.workspaceId ? (
+                <View style={styles.wsConfirm}>
+                  <Text style={styles.confirmText}>
+                    Delete "{label}" permanently? {stats.total} session(s) and their history are removed.
+                  </Text>
+                  <View style={styles.actions}>
+                    <Pressable
+                      accessibilityRole="button"
+                      disabled={busy}
+                      style={[styles.action, styles.actionDanger, busy ? styles.disabled : null]}
+                      onPress={() => deleteWorkspaceMutation.mutate(row.workspaceId)}
+                    >
+                      <Text style={styles.actionTextOn}>Confirm delete</Text>
+                    </Pressable>
+                    <Pressable
+                      accessibilityRole="button"
+                      style={styles.action}
+                      onPress={() => setPendingWorkspaceDelete(null)}
+                    >
+                      <Text style={styles.actionText}>Cancel</Text>
+                    </Pressable>
+                  </View>
+                </View>
+              ) : null}
+            </View>
+          );
+        })}
+        {workspaceRows.length === 0 ? <Text style={styles.empty}>No workspace on this host.</Text> : null}
       </ScrollView>
+
+      <JobLine job={jobs.job} error={jobs.error} busy={jobs.busy} theme={theme} />
 
       {otherHosts.length > 0 ? (
         <View>
@@ -415,14 +565,10 @@ export function AgentManagerPanel({ theme, host, layout, navigation }: PluginSur
               </Text>
             </View>
           ))}
-          <Text style={styles.meta}>
-            Release, archive, and delete run on the host this screen is showing. Use the host picker in the header to
-            switch, or install this plugin on that host.
-          </Text>
         </View>
       ) : null}
 
-      {data?.warning ? <Text style={styles.warning}>{data.warning}</Text> : null}
+      {overview.data?.warning ? <Text style={styles.warning}>{overview.data.warning}</Text> : null}
       {feedback ? <Text style={styles.feedback}>{feedback}</Text> : null}
     </View>
   );
@@ -433,131 +579,12 @@ interface RawListedAgent {
   archivedAt?: string | null;
 }
 
-function RowView({
-  row,
-  styles,
-  busy,
-  selected,
-  onToggle,
-  onRelease,
-  onArchive,
-  onDelete,
-  onOpen,
-}: {
-  row: AgentRow;
-  styles: Record<string, unknown>;
-  busy: boolean;
-  selected: boolean;
-  onToggle: () => void;
-  onRelease: () => void;
-  onArchive: () => void;
-  onDelete: () => void;
-  onOpen?: () => void;
-}) {
-  return (
-    <View style={styles.row as never}>
-      <View style={styles.rowHeader as never}>
-        <Pressable
-          accessibilityRole="checkbox"
-          accessibilityState={{ checked: selected }}
-          style={[styles.checkbox as never, selected ? (styles.checkboxOn as never) : null]}
-          onPress={onToggle}
-        >
-          {selected ? <Text style={styles.checkboxText as never}>✓</Text> : null}
-        </Pressable>
-        <Text style={styles.title as never} numberOfLines={1}>
-          {row.title}
-        </Text>
-        <View style={styles.badge as never}>
-          <Text style={styles.badgeText as never}>{row.status}</Text>
-        </View>
-        {row.archived ? (
-          <View style={styles.badge as never}>
-            <Text style={styles.badgeText as never}>archived</Text>
-          </View>
-        ) : null}
-        {row.pid !== null ? (
-          <View style={[styles.badge as never, { backgroundColor: statusColorFor(row.status) }]}>
-            <Text style={[styles.badgeText as never, { color: "#000000" }]}>
-              {row.processCommand || "proc"} #{row.pid} · {formatBytes(row.rssBytes ?? 0)}
-            </Text>
-          </View>
-        ) : (
-          <View style={styles.badge as never}>
-            <Text style={styles.badgeText as never}>no process</Text>
-          </View>
-        )}
-      </View>
-      <Text style={styles.meta as never} numberOfLines={1}>
-        {row.provider}
-        {row.model ? ` / ${row.model}` : ""} · {row.workspaceName ?? row.workspaceId ?? "—"}
-      </Text>
-      <Text style={styles.meta as never} numberOfLines={1}>
-        {row.shortId} · {row.cwd} · {formatTime(row.updatedAt)}
-        {row.pid !== null && row.isDaemonChild === false ? " · pid is not a daemon child" : ""}
-      </Text>
-      <View style={styles.actions as never}>
-        <Pressable
-          accessibilityRole="button"
-          disabled={busy || row.pid === null}
-          style={[
-            styles.action as never,
-            styles.actionPrimary as never,
-            busy || row.pid === null ? (styles.chipDisabled as never) : null,
-          ]}
-          onPress={onRelease}
-        >
-          <Text style={styles.actionTextOn as never}>Release</Text>
-        </Pressable>
-        <Pressable
-          accessibilityRole="button"
-          disabled={busy || row.archived}
-          style={[styles.action as never, busy || row.archived ? (styles.chipDisabled as never) : null]}
-          onPress={onArchive}
-        >
-          <Text style={styles.actionText as never}>Archive</Text>
-        </Pressable>
-        <Pressable
-          accessibilityRole="button"
-          disabled={busy}
-          style={[styles.action as never, styles.actionDanger as never, busy ? (styles.chipDisabled as never) : null]}
-          onPress={onDelete}
-        >
-          <Text style={styles.actionTextOn as never}>Delete</Text>
-        </Pressable>
-        {onOpen ? (
-          <Pressable accessibilityRole="button" style={styles.action as never} onPress={onOpen}>
-            <Text style={styles.actionText as never}>Open</Text>
-          </Pressable>
-        ) : null}
-      </View>
-    </View>
-  );
-}
-
-function summarize(
-  label: string,
-  freed: string | null,
-  failed: Array<{ agentId: string; error: string }>,
-): string {
+function summarize(label: string, freed: string | null, failed: Array<{ agentId: string; error: string }>): string {
   const head = freed ? `${label} · ${freed} freed` : label;
   if (failed.length === 0) {
-    return `${head}.`;
+    return head;
   }
-  return `${head}, ${failed.length} failed: ${failed[0]?.error ?? ""}`;
-}
-
-function statusColorFor(status: string): string {
-  switch (status) {
-    case "running":
-      return "#7dd3a0";
-    case "idle":
-      return "#e6c76a";
-    case "error":
-      return "#e08b8b";
-    default:
-      return "#9aa0a6";
-  }
+  return `${head} · ${failed.length} failed: ${failed[0]?.error ?? ""}`;
 }
 
 function formatBytes(bytes: number): string {
@@ -569,17 +596,6 @@ function formatBytes(bytes: number): string {
     return `${(mb / 1024).toFixed(2)} GB`;
   }
   return `${mb.toFixed(1)} MB`;
-}
-
-function formatLoadedAt(timestamp: number): string {
-  if (!Number.isFinite(timestamp) || timestamp <= 0) {
-    return "—";
-  }
-  const date = new Date(timestamp);
-  const hours = String(date.getHours()).padStart(2, "0");
-  const minutes = String(date.getMinutes()).padStart(2, "0");
-  const seconds = String(date.getSeconds()).padStart(2, "0");
-  return `${hours}:${minutes}:${seconds}`;
 }
 
 function formatTime(value: string | null): string {

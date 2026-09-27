@@ -1,8 +1,6 @@
 import { deleteAgentViaCli } from "./cli";
 import { killAgentViaDaemonMcp } from "./daemon-mcp";
-import { scanAgentProcesses } from "./processes";
-import type { PaseoLike } from "./overview";
-
+import { scanAgentProcesses, type AgentProcessInfo } from "./processes";
 export interface ReleaseOutcome {
   ok: boolean;
   message: string;
@@ -14,46 +12,33 @@ export interface BatchOutcome {
   failed: Array<{ agentId: string; error: string }>;
 }
 
-export interface PaseoAgentControl extends PaseoLike {
-  agents: PaseoLike["agents"] & {
-    ref(agentId: string): { archive(): Promise<{ archivedAt: string }> };
-  };
+interface KillAttempt {
+  error: string | null;
+  note: string | null;
 }
 
 export async function releaseAgent(
   agentId: string,
   options: { allowSignalFallback: boolean },
 ): Promise<ReleaseOutcome> {
-  const before = await scanAgentProcesses().catch(() => new Map());
-  const target = before.get(agentId);
+  const target = await findProcess(agentId);
   if (!target) {
     return { ok: true, message: "No runtime process to release.", freedBytes: null };
   }
 
-  try {
-    await killAgentViaDaemonMcp(agentId);
-  } catch (error) {
-    const reason = describe(error);
-    if (!options.allowSignalFallback) {
-      return { ok: false, message: reason, freedBytes: null };
-    }
-    if (!target.isDaemonChild) {
-      return {
-        ok: false,
-        message: `${reason} The matched pid ${target.pid} is not a daemon child, so no signal was sent.`,
-        freedBytes: null,
-      };
-    }
-    return signalFallback(agentId, target.pid, target.rssBytes, reason);
+  const attempt = await killOrSignal(agentId, target, options.allowSignalFallback);
+  if (attempt.error) {
+    return { ok: false, message: attempt.error, freedBytes: null };
   }
 
-  const gone = await waitForProcessExit(target.pid);
-  if (!gone) {
-    return { ok: false, message: "The daemon accepted kill_agent but the process is still running.", freedBytes: null };
+  const exited = await waitForProcessesExit([target.pid]);
+  const remaining = await scanAgentProcesses().catch(() => new Map<string, AgentProcessInfo>());
+  if (!exited.has(target.pid) && remaining.has(agentId)) {
+    return { ok: false, message: STILL_RUNNING, freedBytes: null };
   }
   return {
     ok: true,
-    message: `Released pid ${target.pid}. The session stays in its workspace as closed.`,
+    message: attempt.note ?? `Released pid ${target.pid}. The session stays in its workspace as closed.`,
     freedBytes: target.rssBytes,
   };
 }
@@ -62,40 +47,40 @@ export async function releaseAgents(
   agentIds: string[],
   options: { allowSignalFallback: boolean },
 ): Promise<{ released: string[]; failed: BatchOutcome["failed"]; freedBytes: number }> {
+  const before = await scanAgentProcesses().catch(
+    () => new Map<string, AgentProcessInfo>(),
+  );
   const released: string[] = [];
   const failed: BatchOutcome["failed"] = [];
-  let freedBytes = 0;
+  const pending: Array<{ agentId: string; pid: number; rssBytes: number }> = [];
 
   for (const agentId of agentIds) {
-    const outcome = await releaseAgent(agentId, options);
-    if (outcome.ok) {
+    const target = before.get(agentId);
+    if (!target) {
       released.push(agentId);
-      freedBytes += outcome.freedBytes ?? 0;
+      continue;
+    }
+    const attempt = await killOrSignal(agentId, target, options.allowSignalFallback);
+    if (attempt.error) {
+      failed.push({ agentId, error: attempt.error });
+      continue;
+    }
+    pending.push({ agentId, pid: target.pid, rssBytes: target.rssBytes });
+  }
+
+  const exited = await waitForProcessesExit(pending.map((entry) => entry.pid));
+  const remaining = await scanAgentProcesses().catch(() => new Map<string, AgentProcessInfo>());
+  let freedBytes = 0;
+  for (const entry of pending) {
+    if (exited.has(entry.pid) || !remaining.has(entry.agentId)) {
+      released.push(entry.agentId);
+      freedBytes += entry.rssBytes;
     } else {
-      failed.push({ agentId, error: outcome.message });
+      failed.push({ agentId: entry.agentId, error: STILL_RUNNING });
     }
   }
 
   return { released, failed, freedBytes };
-}
-
-export async function archiveAgents(
-  paseo: PaseoAgentControl,
-  agentIds: string[],
-): Promise<BatchOutcome> {
-  const succeeded: string[] = [];
-  const failed: BatchOutcome["failed"] = [];
-
-  for (const agentId of agentIds) {
-    try {
-      await paseo.agents.ref(agentId).archive();
-      succeeded.push(agentId);
-    } catch (error) {
-      failed.push({ agentId, error: describe(error) });
-    }
-  }
-
-  return { succeeded, failed };
 }
 
 export async function deleteAgents(agentIds: string[]): Promise<BatchOutcome> {
@@ -114,36 +99,76 @@ export async function deleteAgents(agentIds: string[]): Promise<BatchOutcome> {
   return { succeeded, failed };
 }
 
+const STILL_RUNNING = "The daemon accepted kill_agent but the runtime process is still alive.";
+
+async function killOrSignal(
+  agentId: string,
+  target: AgentProcessInfo,
+  allowSignalFallback: boolean,
+): Promise<KillAttempt> {
+  try {
+    await killAgentViaDaemonMcp(agentId);
+    return { error: null, note: null };
+  } catch (error) {
+    const reason = describe(error);
+    if (!allowSignalFallback) {
+      return { error: reason, note: null };
+    }
+    if (!target.isDaemonChild) {
+      return {
+        error: `${reason} The matched pid ${target.pid} is not a daemon child, so no signal was sent.`,
+        note: null,
+      };
+    }
+    const outcome = await signalFallback(agentId, target.pid, reason);
+    return outcome.ok ? { error: null, note: outcome.message } : { error: outcome.message, note: null };
+  }
+}
+
 async function signalFallback(
   agentId: string,
   pid: number,
-  rssBytes: number,
   reason: string,
-): Promise<ReleaseOutcome> {
+): Promise<{ ok: boolean; message: string }> {
   try {
     process.kill(pid, "SIGTERM");
   } catch (error) {
-    return { ok: false, message: `${reason} SIGTERM failed: ${describe(error)}`, freedBytes: null };
+    return { ok: false, message: `${reason} SIGTERM failed: ${describe(error)}` };
   }
-  const gone = await waitForProcessExit(pid);
-  return {
-    ok: gone,
-    message: gone
-      ? `Sent SIGTERM to pid ${pid}. The daemon may still report the agent as idle until it is reloaded (paseo agent reload ${agentId.slice(0, 7)}). Reason: ${reason}`
-      : `SIGTERM was sent but pid ${pid} is still running. Reason: ${reason}`,
-    freedBytes: gone ? rssBytes : null,
-  };
+  const exited = await waitForProcessesExit([pid]);
+  return exited.has(pid)
+    ? {
+        ok: true,
+        message: `Sent SIGTERM to pid ${pid}. The daemon may still report the agent as idle until it is reloaded (paseo agent reload ${agentId.slice(0, 7)}). Reason: ${reason}`,
+      }
+    : { ok: false, message: `SIGTERM was sent but pid ${pid} is still running. Reason: ${reason}` };
 }
 
-async function waitForProcessExit(pid: number, timeoutMs = 3000): Promise<boolean> {
+async function findProcess(agentId: string): Promise<AgentProcessInfo | null> {
+  const before = await scanAgentProcesses().catch(
+    () => new Map<string, AgentProcessInfo>(),
+  );
+  return before.get(agentId) ?? null;
+}
+
+async function waitForProcessesExit(pids: number[], timeoutMs = 3000): Promise<Set<number>> {
+  const remaining = new Set(pids);
   const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (!isRunning(pid)) {
-      return true;
+  while (remaining.size > 0 && Date.now() < deadline) {
+    for (const pid of remaining) {
+      if (!isRunning(pid)) {
+        remaining.delete(pid);
+      }
     }
-    await delay(100);
+    if (remaining.size > 0) {
+      await delay(100);
+    }
   }
-  return !isRunning(pid);
+  const exited = new Set(pids);
+  for (const pid of remaining) {
+    exited.delete(pid);
+  }
+  return exited;
 }
 
 function isRunning(pid: number): boolean {

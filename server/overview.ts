@@ -48,7 +48,6 @@ export async function buildOverview(paseo: PaseoLike): Promise<OverviewResult> {
 
   const entries = asArray(agentPage?.entries);
   const agents: AgentRow[] = [];
-  const expectedIds: string[] = [];
 
   for (const entry of entries) {
     const raw = (entry as { agent?: unknown }).agent as RawAgent | undefined;
@@ -59,9 +58,6 @@ export async function buildOverview(paseo: PaseoLike): Promise<OverviewResult> {
     }
     const workspaceId = str(raw.workspaceId);
     const status = str(raw.status) ?? "unknown";
-    if (status !== "closed") {
-      expectedIds.push(id);
-    }
     agents.push({
       id,
       shortId: str(raw.shortId) ?? id.slice(0, 7),
@@ -82,7 +78,7 @@ export async function buildOverview(paseo: PaseoLike): Promise<OverviewResult> {
   }
 
   const [processes, cliAvailable] = await Promise.all([
-    scanAgentProcesses(expectedIds).catch(() => new Map<string, never>()),
+    scanAgentProcesses().catch(() => new Map<string, never>()),
     isCliAvailable().catch(() => false),
   ]);
 
@@ -99,20 +95,33 @@ export async function buildOverview(paseo: PaseoLike): Promise<OverviewResult> {
 
   agents.sort(compareRows);
 
-  const rssBytes = agents.reduce((sum, agent) => sum + (agent.rssBytes ?? 0), 0);
+  let holdingProcess = 0;
+  let closed = 0;
+  let archived = 0;
+  let rssBytes = 0;
+  let anyOpen = false;
+  for (const agent of agents) {
+    if (agent.pid !== null) {
+      holdingProcess += 1;
+      rssBytes += agent.rssBytes ?? 0;
+    }
+    if (agent.status === "closed") {
+      closed += 1;
+    } else {
+      anyOpen = true;
+    }
+    if (agent.archived) {
+      archived += 1;
+    }
+  }
+
   return {
     agents,
-    totals: {
-      total: agents.length,
-      holdingProcess: agents.filter((agent) => agent.pid !== null).length,
-      closed: agents.filter((agent) => agent.status === "closed").length,
-      archived: agents.filter((agent) => agent.archived).length,
-      rssBytes,
-    },
+    totals: { total: agents.length, holdingProcess, closed, archived, rssBytes },
     endpoint: await resolveMcpEndpoint().catch(() => null),
     cliAvailable,
     warning:
-      processes.size === 0 && agents.some((agent) => agent.status !== "closed")
+      holdingProcess === 0 && anyOpen
         ? "No process carrying PASEO_AGENT_ID was found. Process and memory columns need a Linux host."
         : null,
   };

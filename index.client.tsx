@@ -1,5 +1,6 @@
 import type { PluginClientContext } from "@getpaseo/plugin/client";
 
+import { registerReleaseCommands } from "./client/commands";
 import { AgentManagerPanel } from "./client/panel";
 
 export default function contribute(client: PluginClientContext) {
@@ -10,5 +11,8 @@ export default function contribute(client: PluginClientContext) {
     icon: "Cpu",
     surface: "agent-manager",
   });
-  return () => {};
+  const unregisterCommands = registerReleaseCommands(client);
+  return () => {
+    unregisterCommands();
+  };
 }

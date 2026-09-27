@@ -9,32 +9,57 @@ export function paseoHome(): string {
   return configured && configured.length > 0 ? configured : join(homedir(), ".paseo");
 }
 
+export interface DaemonConfig { 
+  listen: string | null;
+  version: string | null;
+  password: string | null;
+}
+
+export interface DaemonAddress {
+  host: string;
+  port: string;
+}
+
+export async function readDaemonConfig(): Promise<DaemonConfig> {
+  try {
+    const raw = await readFile(join(paseoHome(), "config.json"), "utf8");
+    const parsed = JSON.parse(raw) as {
+      version?: unknown;
+      daemon?: { listen?: unknown; password?: unknown };
+    };
+    return {
+      listen: str(parsed.daemon?.listen),
+      version: str(parsed.version),
+      password: str(parsed.daemon?.password),
+    };
+  } catch {
+    return { listen: null, version: null, password: null };
+  }
+}
+
+export async function resolveDaemonAddress(): Promise<DaemonAddress | null> {
+  const config = await readDaemonConfig();
+  return normalizeListenAddress(config.listen ?? DEFAULT_LISTEN);
+}
+
 export async function resolveMcpEndpoint(): Promise<string> {
   const override = process.env.PASEO_AGENT_MANAGER_MCP_URL?.trim();
   if (override) {
     return override;
   }
 
-  let listen = DEFAULT_LISTEN;
-  try {
-    const raw = await readFile(join(paseoHome(), "config.json"), "utf8");
-    const parsed = JSON.parse(raw) as { daemon?: { listen?: unknown } };
-    const configured = parsed.daemon?.listen;
-    if (typeof configured === "string" && configured.trim().length > 0) {
-      listen = configured.trim();
-    }
-  } catch {
-    return `http://${DEFAULT_LISTEN}/mcp/agents`;
-  }
-
-  const address = normalizeListenAddress(listen);
+  const address = await resolveDaemonAddress();
   if (!address) {
-    throw new Error(`Cannot reach the daemon over HTTP: daemon.listen is not a host:port (${listen})`);
+    throw new Error("Cannot reach the daemon over HTTP: daemon.listen is not a host:port");
   }
-  return `http://${address}/mcp/agents`;
+  return `http://${address.host}:${address.port}/mcp/agents`;
 }
 
-function normalizeListenAddress(listen: string): string | null {
+function str(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function normalizeListenAddress(listen: string): DaemonAddress | null {
   if (listen.startsWith("/") || listen.startsWith(".")) {
     return null;
   }
@@ -45,7 +70,7 @@ function normalizeListenAddress(listen: string): string | null {
   }
   const reachableHost =
     host === "0.0.0.0" || host === "::" || host === "[::]" || host === "::0" ? "127.0.0.1" : host;
-  return `${reachableHost}:${port}`;
+  return { host: reachableHost, port };
 }
 
 export async function killAgentViaDaemonMcp(agentId: string): Promise<void> {
