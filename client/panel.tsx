@@ -406,8 +406,13 @@ export function AgentManagerPanel({ theme, host, layout }: PluginSurfaceProps) {
         {pendingArchive === row.workspaceId ? (
           <View style={styles.confirm}>
             <Text style={styles.confirmText}>
-              Archive "{label}"? {stats.total} session(s) stop now
-              {stats.running > 0 ? ` (${stats.running} running)` : ""}.
+              {stats.total === 0
+                ? lastActive
+                  ? `Archive "${label}"? No sessions, and it is the only active workspace at this path, so it stays.`
+                  : `Delete "${label}"? It has no sessions.`
+                : `Archive "${label}"? ${stats.total} session(s) stop now${
+                    stats.running > 0 ? ` (${stats.running} running)` : ""
+                  }.`}
             </Text>
             {lastActive ? (
               <Text style={styles.confirmText}>
@@ -415,7 +420,9 @@ export function AgentManagerPanel({ theme, host, layout }: PluginSurfaceProps) {
                 {candidate ? workspaceLabel(candidate) : "an archived one"}" here next time.
               </Text>
             ) : null}
-            <Text style={styles.wsMeta}>Close tabs frees the same memory without archiving.</Text>
+            {stats.total > 0 ? (
+              <Text style={styles.wsMeta}>Close tabs frees the same memory without archiving.</Text>
+            ) : null}
             <View style={styles.actions}>
               <Pressable
                 accessibilityRole="button"
@@ -474,7 +481,7 @@ export function AgentManagerPanel({ theme, host, layout }: PluginSurfaceProps) {
 
       <View style={styles.block}>
         <View style={styles.blockHead}>
-          <Text style={styles.blockTitle}>Idle memory</Text>
+          <Text style={styles.blockTitle}>Memory</Text>
           <Pressable
             accessibilityRole="button"
             disabled={busy || !autoState}
@@ -492,6 +499,20 @@ export function AgentManagerPanel({ theme, host, layout }: PluginSurfaceProps) {
           <Pressable
             accessibilityRole="button"
             disabled={busy || !autoState}
+            style={[
+              styles.toggle,
+              autoState?.removeEmptyWorkspaces ? styles.toggleOn : null,
+              busy || !autoState ? styles.disabled : null,
+            ]}
+            onPress={() => toggleAutoRelease.mutate({ removeEmptyWorkspaces: !autoState?.removeEmptyWorkspaces })}
+          >
+            <Text style={autoState?.removeEmptyWorkspaces ? styles.toggleTextOn : styles.toggleText}>
+              Empty workspaces {autoState?.removeEmptyWorkspaces ? "on" : "off"}
+            </Text>
+          </Pressable>
+          <Pressable
+            accessibilityRole="button"
+            disabled={busy || !autoState}
             style={[styles.button, busy || !autoState ? styles.disabled : null]}
             onPress={() => {
               setFeedback(null);
@@ -503,13 +524,14 @@ export function AgentManagerPanel({ theme, host, layout }: PluginSurfaceProps) {
         </View>
 
         <Text style={styles.blockMeta}>
-          {autoState?.enabled
-            ? `Every ${autoState.intervalMinutes} min, releases sessions idle for more than ${autoState.idleMinutes} min.`
-            : "Off. Idle sessions keep their provider process until you release them."}
-          {autoState?.lastRunAt ? ` Last check ${formatTime(autoState.lastRunAt)}` : ""}
-          {autoState && autoState.lastReleased.length > 0 ? `, released ${autoState.lastReleased.length}` : ""}
-          {autoState?.lastSkipped ? `, skipped ${autoState.lastSkipped}` : ""}
-          {autoState?.lastError ? `. Error: ${autoState.lastError}` : "."}
+          idle &gt; {autoState?.idleMinutes ?? 10} min
+          {autoState?.lastRunAt ? ` · ${formatTime(autoState.lastRunAt)}` : ""}
+          {autoState && autoState.lastReleased.length > 0 ? ` · released ${autoState.lastReleased.length}` : ""}
+          {autoState && autoState.lastRemovedWorkspaces.length > 0
+            ? ` · removed ${autoState.lastRemovedWorkspaces.length}`
+            : ""}
+          {autoState?.lastSkipped ? ` · skipped ${autoState.lastSkipped}` : ""}
+          {autoState?.lastError ? ` · ${autoState.lastError}` : ""}
         </Text>
 
         <View style={styles.actions}>

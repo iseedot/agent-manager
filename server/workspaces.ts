@@ -232,6 +232,21 @@ export async function archiveWorkspace(
     .map((row) => row.workspaceId);
   const tabs = before.filter((agent) => agent.parentAgentId === null).length;
 
+  if (before.length === 0 && !isLastActive) {
+    const removal = await deleteWorkspace(paseo, workspaceId).catch(() => null);
+    if (removal?.ok) {
+      return {
+        ok: true,
+        refused: false,
+        message: "Empty workspace removed — nothing was archived",
+        archivedAt,
+        activeAtPath: activeAtPath.length,
+        willReopen: reopenCandidate,
+        touchedOthers,
+      };
+    }
+  }
+
   return {
     ok: true,
     refused: false,

@@ -31,9 +31,12 @@ panel's unit is the workspace.
 ```
 14 workspaces · 1 active · 13 archived
 21 sessions · 1 holding a process · 150 MB
+┌ Idle memory ───────────────────── [Auto-release on] [Check now] ┐
+│ Releases a session 10 min after its last activity, and every idle session when the plugin loads. │
+│ Last check 2m ago, released 1.                                    │
+│ Empty workspaces                                   [Auto-delete on]│
+└───────────────────────────────────────────────────────────────────┘
 [Release idle everywhere (1)]  [Refresh]
-[Auto-release idle tabs: On]   [Check now]
-Auto-release checks every 10 min and releases idle tabs over 10 min · last 2m ago · released 1
 
 paseo plugin work                              [active] [2 holding · 120 MB]
 /home/you/project · 6 sessions · 1 running · my-project
@@ -54,15 +57,31 @@ cannot send a second tap to a different row.
 
 ### Auto-release
 
-- **Switch** in the panel, on by default, stored in `~/.paseo/agent-manager/auto-release.json` per
-  host. `Check now` runs a pass immediately instead of waiting for the timer.
-- A pass releases every session that holds a process, is not `running`, is not waiting for your
-  attention (`requiresAttention`), and whose last activity is older than the idle threshold
-  (`lastActivityAt` from the agent record, falling back to the daemon's `updatedAt`).
-- The panel reports the last run: how many sessions it released, how many it skipped, and the next
-  scheduled run. Intervals can be changed in that JSON file (`idleMinutes`, `intervalMinutes`).
+- **Switch** in the panel, on by default. The plugin watches the daemon's agent stream, so a session
+  is released shortly after it has been idle for `idleMinutes` (default 10). There is no polling loop
+  behind that timing.
+- **Per-session timers**: one is armed when a session becomes idle (the plugin sees the status change
+  on the agent stream) and cancelled as soon as the session starts a turn, needs your attention, or
+  gets archived. Before releasing, the plugin re-reads the session and only touches sessions that are
+  still idle.
+- **On load** (`onLoad`, default `allIdle`): when the plugin loads — a plugin reload, a daemon
+  restart, or the first start after boot — every idle session is released once, because a session
+  that went idle before the plugin started produces no status change to react to. `threshold` releases
+  only those already past the idle age, `off` skips the pass.
+- **Safety sweep** every `intervalMinutes` (default 30): re-arms missing timers and releases anything
+  the event path missed (daemon restart, dropped events, plugin reloaded mid-idle).
+- **Empty workspaces** (`removeEmptyWorkspaces`, default on): a workspace with no session records at
+  all is removed — archived ones on every sweep, and archiving an empty workspace removes it right
+  away instead of keeping an empty record. The one exception is the last active workspace at a path:
+  it is archived rather than deleted, because Paseo resolves directory workspaces by path and would
+  reopen some record there anyway. The next sweep removes it once another workspace at that path is
+  active.
 - Releasing never deletes anything: the session stays `closed`, its history is intact, and the next
-  message starts a new process.
+  message starts a new process. Sessions waiting for your attention (`requiresAttention`) are skipped
+  and counted.
+- State and intervals live in `~/.paseo/agent-manager/auto-release.json` per host. While auto-release
+  is on, the plugin keeps its local connection open (it carries the agent stream); it closes again
+  when the switch is turned off.
 
 ### What a workspace action can and cannot touch
 

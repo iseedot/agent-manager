@@ -1,85 +1,131 @@
-import { readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
 
-import { listAllAgents, type AgentRecord } from "./agents";
+import { readFile, readdir } from "node:fs/promises";
 
-import { beginDaemonClientUse, endDaemonClientUse, getDaemonClient } from "./daemon-client";
+import { listAllAgents, type AgentRecord } from "./agents";
+import {
+  beginDaemonClientUse,
+  endDaemonClientUse,
+  getDaemonClient,
+  holdDaemonClient,
+  type DaemonSessionClient,
+  type OwnedAgentSubscription,
+} from "./daemon-client";
 import { killAgentViaDaemonMcp, paseoHome } from "./daemon-mcp";
 import { scanAgentProcesses } from "./processes";
 import { describe, serializeWrite, str, writeJsonAtomic } from "./util";
+import { deleteWorkspace, listWorkspaceRows } from "./workspaces";
+import type { PaseoLike } from "./overview";
 
 export interface AutoReleaseState {
   enabled: boolean;
   idleMinutes: number;
   intervalMinutes: number;
+  onLoad: "allIdle" | "threshold" | "off";
+  removeEmptyWorkspaces: boolean;
   lastRunAt: string | null;
   lastReleased: Array<{ agentId: string; title: string | null }>;
+  lastRemovedWorkspaces: Array<{ workspaceId: string; name: string | null }>;
   lastSkipped: number;
   lastError: string | null;
   nextRunAt: string | null;
 }
 
+export interface AutoReleasePatch {
+  enabled?: boolean;
+  idleMinutes?: number;
+  intervalMinutes?: number;
+  onLoad?: AutoReleaseState["onLoad"];
+  removeEmptyWorkspaces?: boolean;
+  runNow?: boolean;
+}
+
 const STATE_PATH = "agent-manager/auto-release.json";
 const TICK_MS = 60000;
+const MAX_TIMERS = 200;
 const DEFAULT_STATE: AutoReleaseState = {
   enabled: true,
   idleMinutes: 10,
-  intervalMinutes: 10,
+  intervalMinutes: 30,
+  onLoad: "allIdle",
+  removeEmptyWorkspaces: true,
   lastRunAt: null,
   lastReleased: [],
+  lastRemovedWorkspaces: [],
   lastSkipped: 0,
   lastError: null,
   nextRunAt: null,
 };
 
-let timer: ReturnType<typeof setInterval> | null = null;
+const timers = new Map<string, ReturnType<typeof setTimeout>>();
+const lastStatus = new Map<string, string>();
+
+let schedulerTimer: ReturnType<typeof setInterval> | null = null;
+let subscription: OwnedAgentSubscription | null = null;
+let subscriptionCleanup: (() => void) | null = null;
 let running = false;
+let loaded = false;
+
+export function startAutoReleaseScheduler(): () => void {
+  if (schedulerTimer) {
+    return () => {};
+  }
+  schedulerTimer = setInterval(() => {
+    void tick();
+  }, TICK_MS);
+  void activate();
+  return () => {
+    if (schedulerTimer) {
+      clearInterval(schedulerTimer);
+      schedulerTimer = null;
+    }
+    for (const timer of timers.values()) {
+      clearTimeout(timer);
+    }
+    timers.clear();
+    subscriptionCleanup?.();
+    subscriptionCleanup = null;
+    void subscription?.release().catch(() => undefined);
+    subscription = null;
+    holdDaemonClient(false);
+  };
+}
 
 export async function readAutoReleaseState(): Promise<AutoReleaseState> {
   const stored = await readStoredState();
-  return { ...DEFAULT_STATE, ...stored, nextRunAt: nextRunAt(stored, DEFAULT_STATE) };
+  return withDerived({ ...DEFAULT_STATE, ...stored });
 }
 
-export async function updateAutoReleaseState(patch: {
-  enabled?: boolean;
-  idleMinutes?: number;
-  intervalMinutes?: number;
-  runNow?: boolean;
-}): Promise<AutoReleaseState> {
+export async function updateAutoReleaseState(patch: AutoReleasePatch): Promise<AutoReleaseState> {
   const current = { ...DEFAULT_STATE, ...(await readStoredState()) };
   const next: AutoReleaseState = {
     ...current,
     ...(patch.enabled === undefined ? {} : { enabled: patch.enabled }),
     ...(patch.idleMinutes === undefined ? {} : { idleMinutes: clamp(patch.idleMinutes, 1, 24 * 60) }),
     ...(patch.intervalMinutes === undefined ? {} : { intervalMinutes: clamp(patch.intervalMinutes, 1, 24 * 60) }),
+    ...(patch.onLoad === undefined ? {} : { onLoad: patch.onLoad }),
+    ...(patch.removeEmptyWorkspaces === undefined ? {} : { removeEmptyWorkspaces: patch.removeEmptyWorkspaces }),
   };
   await writeState(next);
-  if (patch.runNow === true) {
-    await runAutoRelease();
+  if (patch.enabled === false) {
+    for (const timer of timers.values()) {
+      clearTimeout(timer);
+    }
+    timers.clear();
+    subscriptionCleanup?.();
+    subscriptionCleanup = null;
+    void subscription?.release().catch(() => undefined);
+    subscription = null;
+    holdDaemonClient(false);
+  }
+  if (patch.enabled === true || patch.runNow === true) {
+    await activate();
+    await sweep(patch.runNow === true ? "allIdle" : next.onLoad);
   }
   return readAutoReleaseState();
 }
 
-export function startAutoReleaseScheduler(): () => void {
-  if (timer) {
-    return () => {};
-  }
-  timer = setInterval(() => {
-    void tick();
-  }, TICK_MS);
-  void tick();
-  return () => {
-    if (timer) {
-      clearInterval(timer);
-      timer = null;
-    }
-  };
-}
-
 async function tick(): Promise<void> {
-  if (running) {
-    return;
-  }
   const state = { ...DEFAULT_STATE, ...(await readStoredState()) };
   if (!state.enabled) {
     return;
@@ -87,13 +133,115 @@ async function tick(): Promise<void> {
   if (state.lastRunAt && Date.now() - Date.parse(state.lastRunAt) < state.intervalMinutes * 60000) {
     return;
   }
-  await runAutoRelease();
+  await activate();
+  await sweep("threshold");
 }
 
-export async function runAutoRelease(): Promise<AutoReleaseState> {
+async function activate(): Promise<void> {
   const state = { ...DEFAULT_STATE, ...(await readStoredState()) };
-  if (running) {
-    return readAutoReleaseState();
+  if (!state.enabled) {
+    return;
+  }
+  holdDaemonClient(true);
+  if (subscription) {
+    return;
+  }
+  beginDaemonClientUse();
+  try {
+    const client = await getDaemonClient();
+    const owned = await client.observeAgents({ filter: { includeArchived: true } });
+    subscription = owned;
+    subscriptionCleanup = owned.subscribe({
+      snapshot: () => undefined,
+      update: (message) => {
+        onAgentUpdate(message);
+      },
+    });
+    const snapshot = await owned.ready.catch(() => null);
+    if (snapshot) {
+      for (const entry of snapshot.entries ?? []) {
+        onAgentUpdate({ type: "agent_update", payload: { kind: "upsert", agent: entry.agent } });
+      }
+    }
+    if (!loaded) {
+      loaded = true;
+      void sweep(state.onLoad);
+    }
+  } catch (error) {
+    holdDaemonClient(false);
+    subscription = null;
+    await writeState({ ...state, lastError: describe(error) });
+  } finally {
+    endDaemonClientUse();
+  }
+}
+
+function onAgentUpdate(message: unknown): void {
+  const payload = (message as { payload?: { kind?: unknown; agent?: unknown; id?: unknown } })?.payload;
+  if (!payload) {
+    return;
+  }
+  const agent = payload.agent as RawLiveAgent | undefined;
+  const agentId = str(agent?.id) ?? str(payload.id);
+  if (!agentId) {
+    return;
+  }
+  if (payload.kind === "remove" || str(agent?.archivedAt) !== null) {
+    cancelTimer(agentId);
+    lastStatus.delete(agentId);
+    return;
+  }
+  const status = str(agent?.status) ?? "unknown";
+  const previous = lastStatus.get(agentId);
+  lastStatus.set(agentId, status);
+  if (status !== "idle" || agent?.requiresAttention === true) {
+    cancelTimer(agentId);
+    return;
+  }
+  if (previous === "idle" && timers.has(agentId)) {
+    return;
+  }
+  armFrom(agentId, agent);
+}
+
+function armFrom(agentId: string, agent: RawLiveAgent | undefined): void {
+  void (async () => {
+    const state = { ...DEFAULT_STATE, ...(await readStoredState()) };
+    if (!state.enabled) {
+      return;
+    }
+    const recordPath = await findRecordPath(str(agent?.cwd), agentId);
+    const lastActivity = await readLastActivity(recordPath, str(agent?.updatedAt));
+    const dueAt = (lastActivity ?? Date.now()) + state.idleMinutes * 60000;
+    armTimer(agentId, Math.max(1000, dueAt - Date.now()));
+  })();
+}
+
+function armTimer(agentId: string, delayMs: number): void {
+  if (timers.size >= MAX_TIMERS && !timers.has(agentId)) {
+    return;
+  }
+  cancelTimer(agentId);
+  const timer = setTimeout(() => {
+    timers.delete(agentId);
+    void releaseArmedAgent(agentId);
+  }, delayMs);
+  timers.set(agentId, timer);
+}
+
+function cancelTimer(agentId: string): void {
+  const timer = timers.get(agentId);
+  if (timer) {
+    clearTimeout(timer);
+    timers.delete(agentId);
+  }
+}
+
+async function sweep(mode: AutoReleaseState["onLoad"]): Promise<void> {
+  const state = { ...DEFAULT_STATE, ...(await readStoredState()) };
+  if (!state.enabled || running || mode === "off") {
+    await recordRun(state, [], [], 0, null);
+    return;
   }
   running = true;
   beginDaemonClientUse();
@@ -103,59 +251,156 @@ export async function runAutoRelease(): Promise<AutoReleaseState> {
   try {
     const client = await getDaemonClient();
     const agents = await listAllAgents((options) => client.fetchAgents(options as never));
-    const processes = await scanAgentProcesses().catch(() => new Map());
     const threshold = state.idleMinutes * 60000;
     const now = Date.now();
-
     for (const agent of agents) {
-      if (!processes.has(agent.id)) {
+      if (agent.archivedAt !== null || agent.status === "closed") {
+        cancelTimer(agent.id);
         continue;
       }
-      if (agent.status === "running") {
-        continue;
-      }
-      if (agent.requiresAttention) {
-        skipped += 1;
-        continue;
-      }
-      const idleSince = await resolveLastActivityAt(agent, agent.id);
-      if (idleSince === null || now - idleSince < threshold) {
-        continue;
-      }
-      try {
-        await killAgentViaDaemonMcp(agent.id);
-        const after = await scanAgentProcesses().catch(() => new Map());
-        if (after.has(agent.id)) {
+      if (agent.status === "running" || agent.requiresAttention) {
+        cancelTimer(agent.id);
+        if (agent.status !== "running") {
           skipped += 1;
-          continue;
         }
-        released.push({ agentId: agent.id, title: agent.title });
-      } catch (releaseError) {
-        error = describe(releaseError);
+        continue;
       }
+      const lastActivity = await resolveLastActivityAt(agent);
+      const dueAt = (lastActivity ?? now) + threshold;
+      if (mode === "allIdle" || dueAt <= now) {
+        const result = await releaseIdleAgent(agent.id, agents);
+        if (result === "released") {
+          released.push({ agentId: agent.id, title: agent.title });
+        } else if (result === "skipped") {
+          skipped += 1;
+        } else {
+          error = result;
+        }
+        continue;
+      }
+      armTimer(agent.id, dueAt - now);
     }
-  } catch (runError) {
-    error = describe(runError);
+  } catch (sweepError) {
+    error = describe(sweepError);
   } finally {
     endDaemonClientUse();
     running = false;
   }
 
-  const finishedAt = new Date().toISOString();
-  const next: AutoReleaseState = {
-    ...state,
-    lastRunAt: finishedAt,
-    lastReleased: released,
-    lastSkipped: skipped,
-    lastError: error,
-    nextRunAt: new Date(Date.parse(finishedAt) + state.intervalMinutes * 60000).toISOString(),
-  };
-  await writeState(next);
-  return next;
+  const removed = state.removeEmptyWorkspaces ? await removeEmptyWorkspaces() : [];
+  await recordRun(state, released, removed, skipped, error);
 }
 
-async function resolveLastActivityAt(agent: AgentRecord, agentId: string): Promise<number | null> {
-  const recordPath = await findRecordPath(agent.cwd, agentId);
+async function releaseArmedAgent(agentId: string): Promise<void> {
+  const outcome = await releaseIdleAgent(agentId);
+  if (outcome !== "released") {
+    return;
+  }
+  const state = { ...DEFAULT_STATE, ...(await readStoredState()) };
+  const released = [{ agentId, title: null }, ...state.lastReleased].slice(0, 5);
+  await writeState(withDerived({ ...state, lastReleased: released }));
+}
+
+async function releaseIdleAgent(agentId: string, known?: AgentRecord[]): Promise<"released" | "skipped" | string> {
+  try {
+    const client = await getDaemonClient();
+    const current = known?.find((agent) => agent.id === agentId) ?? (await fetchAgent(client, agentId));
+    if (!current || current.status === "running" || current.status === "closed") {
+      return "skipped";
+    }
+    if (current.requiresAttention || current.archivedAt !== null) {
+      return "skipped";
+    }
+    await killAgentViaDaemonMcp(agentId);
+    return (await hasRuntime(agentId)) ? "skipped" : "released";
+  } catch (error) {
+    return describe(error);
+  }
+}
+
+async function fetchAgent(client: DaemonSessionClient, agentId: string): Promise<AgentRecord | null> {
+  const agents = await listAllAgents((options) => client.fetchAgents(options as never)).catch(() => []);
+  return agents.find((agent) => agent.id === agentId) ?? null;
+}
+
+async function hasRuntime(agentId: string): Promise<boolean> {
+  const processes = await scanAgentProcesses().catch(() => new Map());
+  return processes.has(agentId);
+}
+
+async function removeEmptyWorkspaces(): Promise<Array<{ workspaceId: string; name: string | null }>> {
+  const removed: Array<{ workspaceId: string; name: string | null }> = [];
+  try {
+    const rows = await listWorkspaceRows();
+    const client = await getDaemonClient();
+    const agents = await listAllAgents((options) => client.fetchAgents(options as never));
+    const busy = new Set(agents.map((agent) => agent.workspaceId).filter((id): id is string => id !== null));
+    const paseo: PaseoLike = {
+      agents: { list: (options) => client.fetchAgents(options as never) },
+    };
+    for (const row of rows) {
+      if (row.archivedAt === null || busy.has(row.workspaceId)) {
+        continue;
+      }
+      const result = await deleteWorkspace(paseo, row.workspaceId).catch(() => null);
+      if (result?.ok) {
+        removed.push({ workspaceId: row.workspaceId, name: row.name });
+      }
+    }
+  } catch {
+    return removed;
+  }
+  return removed;
+}
+
+async function recordRun(
+  state: AutoReleaseState,
+  released: Array<{ agentId: string; title: string | null }>,
+  removedWorkspaces: Array<{ workspaceId: string; name: string | null }>,
+  skipped: number,
+  error: string | null,
+): Promise<void> {
+  const finishedAt = new Date().toISOString();
+  await writeState(
+    withDerived({
+      ...state,
+      lastRunAt: finishedAt,
+      lastReleased: released,
+      lastRemovedWorkspaces: removedWorkspaces,
+      lastSkipped: skipped,
+      lastError: error,
+    }),
+  );
+}
+
+function withDerived(state: AutoReleaseState): AutoReleaseState {
+  if (!state.enabled) {
+    return { ...state, nextRunAt: null };
+  }
+  if (!state.lastRunAt) {
+    return { ...state, nextRunAt: new Date().toISOString() };
+  }
+  return {
+    ...state,
+    nextRunAt: new Date(Date.parse(state.lastRunAt) + state.intervalMinutes * 60000).toISOString(),
+  };
+}
+
+interface RawLiveAgent {
+  id?: unknown;
+  status?: unknown;
+  archivedAt?: unknown;
+  requiresAttention?: unknown;
+  updatedAt?: unknown;
+  cwd?: unknown;
+}
+
+async function resolveLastActivityAt(agent: AgentRecord): Promise<number | null> {
+  const recordPath = await findRecordPath(agent.cwd, agent.id);
+  return readLastActivity(recordPath, agent.updatedAt);
+}
+
+async function readLastActivity(recordPath: string | null, fallback: string | null): Promise<number | null> {
   if (recordPath) {
     try {
       const parsed = JSON.parse(await readFile(recordPath, "utf8")) as { lastActivityAt?: unknown };
@@ -164,10 +409,10 @@ async function resolveLastActivityAt(agent: AgentRecord, agentId: string): Promi
         return parsedMs;
       }
     } catch {
-      // fall through to the wire timestamp
+      // fall through to the daemon timestamp
     }
   }
-  const updatedMs = Date.parse(agent.updatedAt ?? "");
+  const updatedMs = Date.parse(fallback ?? "");
   return Number.isFinite(updatedMs) ? updatedMs : null;
 }
 
@@ -214,17 +459,6 @@ async function readStoredState(): Promise<Partial<AutoReleaseState>> {
 
 function writeState(state: AutoReleaseState): Promise<void> {
   return serializeWrite(() => writeJsonAtomic(join(paseoHome(), STATE_PATH), state));
-}
-
-function nextRunAt(stored: Partial<AutoReleaseState>, defaults: AutoReleaseState): string | null {
-  if (stored.enabled === false) {
-    return null;
-  }
-  if (!stored.lastRunAt) {
-    return new Date().toISOString();
-  }
-  const interval = (stored.intervalMinutes ?? defaults.intervalMinutes) * 60000;
-  return new Date(Date.parse(stored.lastRunAt) + interval).toISOString();
 }
 
 function clamp(value: number, min: number, max: number): number {

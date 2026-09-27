@@ -18,13 +18,28 @@ export interface WorkspaceRecoveryState {
   branch?: string | null;
 }
 
+export interface ObservedAgentEntry {
+  agent?: unknown;
+}
+
+export interface OwnedAgentSubscription {
+  readonly ready: Promise<{ entries?: ObservedAgentEntry[] }>;
+  subscribe(observer: {
+    snapshot: (snapshot: { entries?: ObservedAgentEntry[] }) => void;
+    update: (message: unknown) => void;
+    error?: (error: unknown) => void;
+  }): () => void;
+  release(): Promise<void>;
+}
+
 export interface DaemonSessionClient {
   connect(): Promise<void>;
   close(): Promise<void>;
   fetchAgents(options?: {
     filter?: { includeArchived?: boolean };
-    page?: { limit?: number };
+    page?: { limit?: number; cursor?: string };
   }): Promise<{ entries?: unknown }>;
+  observeAgents(options?: { filter?: { includeArchived?: boolean } }): Promise<OwnedAgentSubscription>;
   restoreWorkspace(workspaceId: string, requestId?: string): Promise<void>;
   inspectWorkspaceRecovery(workspaceId: string, requestId?: string): Promise<WorkspaceRecoveryState>;
   refreshAgent(agentId: string, requestId?: string): Promise<unknown>;
@@ -38,6 +53,18 @@ interface DaemonClientConstructor {
 let pendingClient: Promise<DaemonSessionClient> | null = null;
 let activeUses = 0;
 let idleTimer: ReturnType<typeof setTimeout> | null = null;
+let held = false;
+
+export function holdDaemonClient(hold: boolean): void {
+  held = hold;
+  if (hold) {
+    cancelIdleClose();
+    return;
+  }
+  if (activeUses === 0) {
+    scheduleIdleClose();
+  }
+}
 
 export function beginDaemonClientUse(): void {
   activeUses += 1;
@@ -50,13 +77,20 @@ export function endDaemonClientUse(): void {
     return;
   }
   cancelIdleClose();
+  scheduleIdleClose();
+}
+
+function scheduleIdleClose(): void {
+  if (held) {
+    return;
+  }
   const timeout = idleCloseMs();
   if (timeout <= 0) {
     return;
   }
   idleTimer = setTimeout(() => {
     idleTimer = null;
-    if (activeUses === 0) {
+    if (activeUses === 0 && !held) {
       void disposeDaemonClient();
     }
   }, timeout);
@@ -92,8 +126,7 @@ export async function getDaemonClient(): Promise<DaemonSessionClient> {
 
 export async function disposeDaemonClient(): Promise<void> {
   cancelIdleClose();
-  const pending = pendingClient;
-  pendingClient = null;
+  const pending = pendingClient;  pendingClient = null;
   if (!pending) {
     return;
   }
