@@ -3,11 +3,16 @@ import type { PluginServerContext } from "@getpaseo/plugin/server";
 import {
   autoReleaseSetRpc,
   autoReleaseStateRpc,
+  browseRpc,
   jobStatusRpc,
+  moveStatusRpc,
   overviewRpc,
+  projectsRpc,
+  readFileRpc,
   releaseManyRpc,
   workspaceActivateRpc,
   workspaceArchiveRpc,
+  workspaceMoveRpc,
   systemRpc,
   terminalsCloseRpc,
   terminalsRpc,
@@ -17,9 +22,11 @@ import {
 } from "./shared/contracts";
 import { releaseAgents } from "./server/actions";
 import { readAutoReleaseState, startAutoReleaseScheduler, updateAutoReleaseState } from "./server/auto-release";
+import { browseDirectory, readTextFile } from "./server/browse";
 import { disposeDaemonClient } from "./server/daemon-client";
 import { installCrashGuards } from "./server/guard";
 import { paseoHome } from "./server/daemon-mcp";
+import { moveWorkspace, listProjectRows, readMoveStatus } from "./server/projects";
 import { buildOverview, type PaseoLike } from "./server/overview";
 import { readSystemStats } from "./server/system";
 import { closeTerminals, listAllTerminals, summarizeTerminals, type TerminalKiller, type TerminalLister } from "./server/terminals";
@@ -106,6 +113,18 @@ export default function contribute(server: PluginServerContext) {
   server.handle(autoReleaseStateRpc, async () => readAutoReleaseState());
 
   server.handle(autoReleaseSetRpc, async (patch) => updateAutoReleaseState(patch));
+
+  server.handle(projectsRpc, async () => ({ projects: await listProjectRows() }));
+
+  server.handle(workspaceMoveRpc, async ({ workspaceId, projectId, moveDirectory }) =>
+    moveWorkspace({ workspaceId, projectId, moveDirectory }),
+  );
+
+  server.handle(moveStatusRpc, async () => readMoveStatus());
+
+  server.handle(browseRpc, async ({ path }) => browseDirectory(path));
+
+  server.handle(readFileRpc, async ({ path }) => readTextFile(path));
 
   const stopAutoRelease = startAutoReleaseScheduler();
 

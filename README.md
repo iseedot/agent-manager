@@ -13,6 +13,15 @@ activate / delete for the whole workspace. Idle runtimes are released automatica
   close its open tabs or terminals (terminals ask first when a command is running).
 - `Archive`: hide a workspace with everything it owns. `Activate`: restore the tabs it had when it was
   archived. `Delete`: remove it and its sessions for good.
+- `Move…`: hand a workspace (and every session in it) to another project that already exists in
+  Paseo. Optionally the working directory follows the target project root. Paseo restarts to apply
+  it, so running sessions and terminals stop for a few seconds; history is kept, and the previous
+  registry file is backed up next to it. A move into an unknown or archived project is refused.
+- **Home files**: a file browser that starts in the home directory and can walk anywhere, including
+  above the workspace root. Add it to the Explorer sidebar once from its tab launcher (`+`), and `Cmd+E`
+  returns to it from then on. Directories switch on one press and the top row of the listing is `../`;
+  there is no refresh button because a directory change always reads again. A file opens in the
+  panel with a Back button.
 - ⌘K `Release other sessions`: release everything in the focused workspace except the current session.
 - Always on: idle sessions are released ~10 minutes after their last activity (driven by the daemon's
   agent stream, not by polling; one pass on load, a safety sweep every 30 minutes), and workspaces
@@ -26,11 +35,11 @@ paseo plugin install https://github.com/iseedot/agent-manager   # update later: 
 ```
 
 `"pluginsEnabled": true` in the daemon `config.json`, then `paseo reload`. The panel is **Agent
-Manager** in the app sidebar; install once per daemon. It reads when opened and keeps that for 30
-seconds, so `Refresh` or an action is what pulls new data.
+Manager** in the app sidebar, and **Home files** in the Explorer tab launcher; install once per daemon.
+It reads when opened and keeps that for 30 seconds, so `Refresh` or an action is what pulls new data.
 
 Needs Paseo 0.9.2+, a Linux daemon host (`/proc` feeds the pid and memory numbers), the `paseo` CLI
-for Delete and the daemon MCP route for Release. Nothing is installed: it uses the daemon's own
+for Delete, Move and the daemon MCP route for Release. Nothing is installed: it uses the daemon's own
 `@getpaseo/client` and the session protocol on `ws://<daemon.listen>/ws`.
 
 ## Notes
@@ -38,6 +47,11 @@ for Delete and the daemon MCP route for Release. Nothing is installed: it uses t
 - Actions are addressed by workspace id, never by path, and never touch other workspaces. Archiving
   the last active workspace at a path asks first, because Paseo resolves directory workspaces by path.
 - `Activate` restores the tab set from archive time; sessions you closed earlier stay closed.
+- `Move…` rewrites the workspace's project (and optionally its directory) in the daemon's registry;
+  it needs a restart because the daemon caches that registry in memory. Workspaces whose project was
+  removed are still listed, as `project removed`, and can be moved into an existing project.
+- The file browser is read-only and renders text in the panel; Paseo's plugin API has no way to hand a
+  file to the app's own editor tabs.
 - `Delete` also drops the workspace record, remembered in `~/.paseo/agent-manager/deleted-workspaces.json`.
 
 MIT

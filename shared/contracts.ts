@@ -216,3 +216,86 @@ export const jobStatusRpc = defineRpc({
   input: z.object({ jobId: z.string() }),
   output: jobSchema,
 });
+
+export const projectRowSchema = z.object({
+  projectId: z.string(),
+  name: z.string().nullable(),
+  rootPath: z.string(),
+  archived: z.boolean(),
+  workspaceCount: z.number().int(),
+});
+
+export type ProjectRow = z.infer<typeof projectRowSchema>;
+
+export const moveStatusSchema = z.object({
+  phase: z.enum(["idle", "pending", "applied", "failed"]),
+  workspaceId: z.string().nullable(),
+  workspaceName: z.string().nullable(),
+  fromProjectId: z.string().nullable(),
+  toProjectId: z.string().nullable(),
+  toProjectName: z.string().nullable(),
+  moveDirectory: z.boolean(),
+  message: z.string(),
+  at: z.string().nullable(),
+});
+
+export type MoveStatus = z.infer<typeof moveStatusSchema>;
+
+export const projectsRpc = defineRpc({
+  name: "agent-manager.projects",
+  input: z.object({}),
+  output: z.object({ projects: z.array(projectRowSchema) }),
+});
+
+export const workspaceMoveRpc = defineRpc({
+  name: "agent-manager.workspace-move",
+  input: z.object({
+    workspaceId: z.string(),
+    projectId: z.string(),
+    moveDirectory: z.boolean(),
+  }),
+  output: z.object({ ok: z.boolean(), message: z.string(), move: moveStatusSchema }),
+});
+
+export const moveStatusRpc = defineRpc({
+  name: "agent-manager.move-status",
+  input: z.object({}),
+  output: moveStatusSchema,
+});
+
+export const browseEntrySchema = z.object({
+  name: z.string(),
+  path: z.string(),
+  directory: z.boolean(),
+  size: z.number().int().nullable(),
+  modifiedAt: z.string().nullable(),
+  link: z.boolean(),
+});
+
+export type BrowseEntry = z.infer<typeof browseEntrySchema>;
+
+export const browseRpc = defineRpc({
+  name: "agent-manager.browse",
+  input: z.object({ path: z.string().nullable() }),
+  output: z.object({
+    home: z.string(),
+    path: z.string(),
+    parent: z.string().nullable(),
+    entries: z.array(browseEntrySchema),
+    truncated: z.boolean(),
+    error: z.string().nullable(),
+  }),
+});
+
+export const readFileRpc = defineRpc({
+  name: "agent-manager.read-file",
+  input: z.object({ path: z.string() }),
+  output: z.object({
+    path: z.string(),
+    text: z.string(),
+    size: z.number().int(),
+    truncated: z.boolean(),
+    binary: z.boolean(),
+    error: z.string().nullable(),
+  }),
+});

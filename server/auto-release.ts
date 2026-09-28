@@ -417,7 +417,7 @@ async function readLastActivity(recordPath: string | null, fallback: string | nu
         return parsedMs;
       }
     } catch {
-      // fall through to the daemon timestamp
+      return null;
     }
   }
   const updatedMs = Date.parse(fallback ?? "");

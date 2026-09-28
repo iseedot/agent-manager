@@ -90,7 +90,8 @@ const JOBS = new Map<string, JobState>();
 const ACTIVE_JOBS = new Map<string, string>();
 const JOB_HISTORY = 8;
 const ARCHIVE_BATCH_WINDOW_MS = 60000;
-const REGISTRY_PATH = "projects/workspaces.json";
+export const REGISTRY_PATH = "projects/workspaces.json";
+export const PROJECTS_PATH = "projects/projects.json";
 const DELETED_PATH = "agent-manager/deleted-workspaces.json";
 
 interface DeletedState {
@@ -101,7 +102,7 @@ interface DeletedState {
 export async function listWorkspaceRows(): Promise<WorkspaceRow[]> {
   const [workspaces, projects, deleted] = await Promise.all([
     readJsonList<WorkspaceRecord>(REGISTRY_PATH, "workspaces"),
-    readJsonList<ProjectRecord>("projects/projects.json", "projects"),
+    readJsonList<ProjectRecord>(PROJECTS_PATH, "projects"),
     readDeletedState(),
   ]);
   const projectNames = new Map<string, string | null>();
@@ -127,7 +128,7 @@ export async function listWorkspaceRows(): Promise<WorkspaceRow[]> {
       reclaimed.push(workspaceId);
     }
     const projectId = str(record.projectId);
-    if (!projectId || !projectNames.has(projectId)) {
+    if (!projectId) {
       continue;
     }
     rows.push({
@@ -601,7 +602,7 @@ function inArchiveBatch(agentArchivedAt: string | null, workspaceArchivedAt: str
   return Math.abs(agentMs - workspaceMs) <= ARCHIVE_BATCH_WINDOW_MS;
 }
 
-async function readJsonList<T>(relativePath: string, key: string): Promise<T[]> {
+export async function readJsonList<T>(relativePath: string, key: string): Promise<T[]> {
   try {
     const raw = await readFile(join(paseoHome(), relativePath), "utf8");
     const parsed = JSON.parse(raw) as unknown;
