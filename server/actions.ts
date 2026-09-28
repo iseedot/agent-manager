@@ -1,9 +1,7 @@
-import { readFileSync } from "node:fs";
-
 import { deleteAgentViaCli } from "./cli";
 import { killAgentViaDaemonMcp } from "./daemon-mcp";
-import { scanAgentProcesses, type AgentProcessInfo } from "./processes";
-import { describe } from "./util";
+import { scanAgentProcesses, scanAgentProcessesFresh, type AgentProcessInfo } from "./processes";
+import { describe, readProcStatSync } from "./util";
 
 export interface BatchOutcome {
   succeeded: string[];
@@ -19,9 +17,7 @@ export async function releaseAgents(
   agentIds: string[],
   options: { allowSignalFallback: boolean },
 ): Promise<{ released: string[]; failed: BatchOutcome["failed"]; freedBytes: number }> {
-  const before = await scanAgentProcesses().catch(
-    () => new Map<string, AgentProcessInfo>(),
-  );
+  const before = await scanAgentProcessesFresh().catch(() => new Map<string, AgentProcessInfo>());
   const released: string[] = [];
   const failed: BatchOutcome["failed"] = [];
   const pending: Array<{ agentId: string; pid: number; rssBytes: number }> = [];
@@ -41,7 +37,7 @@ export async function releaseAgents(
   }
 
   const exited = await waitForProcessesExit(pending.map((entry) => entry.pid));
-  const remaining = await scanAgentProcesses().catch(() => new Map<string, AgentProcessInfo>());
+  const remaining = await scanAgentProcessesFresh().catch(() => new Map<string, AgentProcessInfo>());
   let freedBytes = 0;
   for (const entry of pending) {
     if (exited.has(entry.pid) || !remaining.has(entry.agentId)) {
@@ -131,24 +127,15 @@ async function waitForProcessesExit(pids: number[], timeoutMs = 3000): Promise<S
 }
 
 function isRunning(pid: number): boolean {
+  const stat = readProcStatSync(pid);
+  if (stat) {
+    return stat.state !== "Z" && stat.state !== "X";
+  }
   try {
-    const raw = readFileSync(`/proc/${pid}/stat`, "latin1");
-    const close = raw.lastIndexOf(")");
-    if (close < 0) {
-      return true;
-    }
-    const state = raw.slice(close + 2, close + 3);
-    return state !== "Z" && state !== "X";
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-      return false;
-    }
-    try {
-      process.kill(pid, 0);
-      return true;
-    } catch {
-      return false;
-    }
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
   }
 }
 

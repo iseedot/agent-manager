@@ -22,7 +22,7 @@ import { installCrashGuards } from "./server/guard";
 import { paseoHome } from "./server/daemon-mcp";
 import { buildOverview, type PaseoLike } from "./server/overview";
 import { readSystemStats } from "./server/system";
-import { closeTerminals, listAllTerminals, listWorkspaceTerminals, summarizeTerminals, type TerminalKiller, type TerminalLister } from "./server/terminals";
+import { closeTerminals, listAllTerminals, summarizeTerminals, type TerminalKiller, type TerminalLister } from "./server/terminals";
 import {
   archiveWorkspace,
   closeWorkspaceTabs,
@@ -53,8 +53,11 @@ export default function contribute(server: PluginServerContext) {
 
   server.handle(terminalsCloseRpc, async ({ workspaceId }, { paseo }) => {
     const api = paseo as unknown as TerminalLister & TerminalKiller;
-    const terminals = await listWorkspaceTerminals(api, workspaceId);
-    const result = await closeTerminals(api, terminals.map((terminal) => terminal.id));
+    const terminals = await listAllTerminals(api);
+    const result = await closeTerminals(
+      api,
+      terminals.filter((terminal) => terminal.workspaceId === workspaceId).map((terminal) => terminal.id),
+    );
     return { closed: result.closed, failed: result.failed };
   });
 

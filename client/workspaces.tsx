@@ -3,6 +3,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ActivityIndicator, Text, View } from "react-native";
 
+import { message } from "./format";
 import {
   jobStatusRpc,
   workspaceActivateRpc,
@@ -262,6 +263,3 @@ export function JobLine({
   );
 }
 
-export function message(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}

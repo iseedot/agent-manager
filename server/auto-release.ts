@@ -13,7 +13,7 @@ import {
 } from "./daemon-client";
 import { killAgentViaDaemonMcp, paseoHome } from "./daemon-mcp";
 import { fireAndForget } from "./guard";
-import { scanAgentProcesses } from "./processes";
+import { scanAgentProcesses, scanAgentProcessesFresh } from "./processes";
 import { describe, serializeWrite, str, writeJsonAtomic } from "./util";
 import { deleteWorkspace, listWorkspaceRows } from "./workspaces";
 import type { PaseoLike } from "./overview";
@@ -332,7 +332,7 @@ async function fetchAgent(client: DaemonSessionClient, agentId: string): Promise
 }
 
 async function hasRuntime(agentId: string): Promise<boolean> {
-  const processes = await scanAgentProcesses().catch(() => new Map());
+  const processes = await scanAgentProcessesFresh().catch(() => new Map());
   return processes.has(agentId);
 }
 

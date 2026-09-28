@@ -18,10 +18,10 @@ import {
   type SystemStats,
   type WorkspaceRow,
 } from "../shared/contracts";
+import { formatBytes, formatMegabytes, formatTime, message } from "./format";
 import {
   JobLine,
   activeAtPath,
-  message,
   isLastActiveAtPath,
   pathGroups,
   reopenCandidate,
@@ -31,7 +31,10 @@ import {
   workspaceStats,
 } from "./workspaces";
 
+const READ_ONCE = { staleTime: 30000, refetchOnWindowFocus: false } as const;
+
 export function AgentManagerPanel({ theme, host, layout }: PluginSurfaceProps) {
+  const compact = layout.compact;
   const queryClient = useQueryClient();
   const fetchOverview = useRpc(overviewRpc);
   const releaseMany = useRpc(releaseManyRpc);
@@ -57,22 +60,25 @@ export function AgentManagerPanel({ theme, host, layout }: PluginSurfaceProps) {
   const overview = useQuery({
     queryKey: ["agent-manager", "overview", host.id],
     queryFn: () => fetchOverview({}),
+    ...READ_ONCE,
   });
 
   const terminals = useQuery({
     queryKey: ["agent-manager", "terminals", host.id],
     queryFn: () => fetchTerminals({}),
+    ...READ_ONCE,
   });
 
   const system = useQuery({
     queryKey: ["agent-manager", "system", host.id],
     queryFn: () => fetchSystem({}),
+    ...READ_ONCE,
   });
 
   const autoRelease = useQuery({
     queryKey: ["agent-manager", "auto-release", host.id],
     queryFn: () => readAutoRelease({}),
-    refetchInterval: 60000,
+    ...READ_ONCE,
   });
 
   const refreshAll = useCallback(async () => {
@@ -249,7 +255,12 @@ export function AgentManagerPanel({ theme, host, layout }: PluginSurfaceProps) {
         marginTop: 14,
         backgroundColor: palette.surface1,
       },
-      blockHead: { flexDirection: "row" as const, alignItems: "center" as const, gap: 8 },
+      blockHead: {
+        flexDirection: "row" as const,
+        alignItems: "center" as const,
+        flexWrap: "wrap" as const,
+        gap: 6,
+      },
       blockTitle: { color: palette.foreground, fontSize: 13, fontWeight: "600" as const, flexGrow: 1 },
       blockMeta: { color: palette.foregroundMuted, fontSize: 12, lineHeight: 17 },
       sectionTitle: {
@@ -265,7 +276,12 @@ export function AgentManagerPanel({ theme, host, layout }: PluginSurfaceProps) {
         paddingVertical: 12,
         gap: 4,
       },
-      wsHead: { flexDirection: "row" as const, alignItems: "center" as const, gap: 8 },
+      wsHead: {
+        flexDirection: "row" as const,
+        alignItems: "center" as const,
+        flexWrap: "wrap" as const,
+        gap: 6,
+      },
       wsName: { color: palette.foreground, fontSize: 14, fontWeight: "600" as const, flexShrink: 1, flexGrow: 1 },
       chip: { paddingHorizontal: 8, paddingVertical: 3, borderRadius: 999, backgroundColor: palette.surface2 },
       chipText: { color: palette.foregroundMuted, fontSize: 11 },
@@ -282,6 +298,8 @@ export function AgentManagerPanel({ theme, host, layout }: PluginSurfaceProps) {
       buttonPrimary: { backgroundColor: palette.accent, borderColor: palette.accent },
       buttonDanger: { backgroundColor: palette.statusDanger, borderColor: palette.statusDanger },
       buttonLink: { backgroundColor: "transparent", borderColor: "transparent", paddingHorizontal: 6 },
+      buttonFull: { flexBasis: "100%" as const, alignItems: "center" as const },
+      buttonHalf: { flexBasis: "47%" as const, alignItems: "center" as const },
       buttonText: { color: palette.foreground, fontSize: 12 },
       buttonTextOn: { color: palette.accentForeground, fontSize: 12 },
       toggle: {
@@ -396,7 +414,7 @@ export function AgentManagerPanel({ theme, host, layout }: PluginSurfaceProps) {
             <Pressable
               accessibilityRole="button"
               disabled={busy}
-              style={[styles.button, styles.buttonPrimary, busy ? styles.disabled : null]}
+              style={[styles.button, styles.buttonPrimary, compact ? styles.buttonFull : null, busy ? styles.disabled : null]}
               onPress={() => {
                 setFeedback(null);
                 jobs.activate({ workspaceId: row.workspaceId, workspaceName: label, release: true });
@@ -407,7 +425,7 @@ export function AgentManagerPanel({ theme, host, layout }: PluginSurfaceProps) {
             <Pressable
               accessibilityRole="button"
               disabled={busy}
-              style={[styles.button, styles.buttonDanger, busy ? styles.disabled : null]}
+              style={[styles.button, styles.buttonDanger, compact ? styles.buttonFull : null, busy ? styles.disabled : null]}
               onPress={() => {
                 setPendingArchive(null);
                 setPendingWorkspaceDelete(row.workspaceId);
@@ -432,7 +450,7 @@ export function AgentManagerPanel({ theme, host, layout }: PluginSurfaceProps) {
             <Pressable
               accessibilityRole="button"
               disabled={busy || stats.archived === 0}
-              style={[styles.button, busy || stats.archived === 0 ? styles.disabled : null]}
+              style={[styles.button, compact ? styles.buttonFull : null, busy || stats.archived === 0 ? styles.disabled : null]}
               onPress={() => {
                 setFeedback(null);
                 jobs.activate({ workspaceId: row.workspaceId, workspaceName: label, release: true, tabsOnly: true });
@@ -443,7 +461,7 @@ export function AgentManagerPanel({ theme, host, layout }: PluginSurfaceProps) {
             <Pressable
               accessibilityRole="button"
               disabled={busy || stats.open === 0}
-              style={[styles.button, busy || stats.open === 0 ? styles.disabled : null]}
+              style={[styles.button, compact ? styles.buttonFull : null, busy || stats.open === 0 ? styles.disabled : null]}
               onPress={() => {
                 setFeedback(null);
                 closeTabsMutation.mutate(row.workspaceId);
@@ -456,6 +474,7 @@ export function AgentManagerPanel({ theme, host, layout }: PluginSurfaceProps) {
               disabled={busy || (terminalsByWorkspace.get(row.workspaceId)?.count ?? 0) === 0}
               style={[
                 styles.button,
+                compact ? styles.buttonFull : null,
                 busy || (terminalsByWorkspace.get(row.workspaceId)?.count ?? 0) === 0 ? styles.disabled : null,
               ]}
               onPress={() => {
@@ -475,7 +494,7 @@ export function AgentManagerPanel({ theme, host, layout }: PluginSurfaceProps) {
             <Pressable
               accessibilityRole="button"
               disabled={busy}
-              style={[styles.button, busy ? styles.disabled : null]}
+              style={[styles.button, compact ? styles.buttonFull : null, busy ? styles.disabled : null]}
               onPress={() => {
                 setPendingWorkspaceDelete(null);
                 setPendingArchive(row.workspaceId);
@@ -510,14 +529,18 @@ export function AgentManagerPanel({ theme, host, layout }: PluginSurfaceProps) {
               <Pressable
                 accessibilityRole="button"
                 disabled={busy}
-                style={[styles.button, styles.buttonDanger, busy ? styles.disabled : null]}
+                style={[styles.button, styles.buttonDanger, compact ? styles.buttonFull : null, busy ? styles.disabled : null]}
                 onPress={() =>
                   archiveWorkspaceMutation.mutate({ workspaceId: row.workspaceId, confirmLastActive: true })
                 }
               >
                 <Text style={styles.buttonTextOn}>Confirm archive</Text>
               </Pressable>
-              <Pressable accessibilityRole="button" style={styles.button} onPress={() => setPendingArchive(null)}>
+              <Pressable
+                accessibilityRole="button"
+                style={[styles.button, compact ? styles.buttonFull : null]}
+                onPress={() => setPendingArchive(null)}
+              >
                 <Text style={styles.buttonText}>Cancel</Text>
               </Pressable>
             </View>
@@ -534,7 +557,7 @@ export function AgentManagerPanel({ theme, host, layout }: PluginSurfaceProps) {
               <Pressable
                 accessibilityRole="button"
                 disabled={busy}
-                style={[styles.button, styles.buttonDanger, busy ? styles.disabled : null]}
+                style={[styles.button, styles.buttonDanger, compact ? styles.buttonFull : null, busy ? styles.disabled : null]}
                 onPress={() => closeTerminalsMutation.mutate(row.workspaceId)}
               >
                 <Text style={styles.buttonTextOn}>Confirm close</Text>
@@ -555,14 +578,14 @@ export function AgentManagerPanel({ theme, host, layout }: PluginSurfaceProps) {
               <Pressable
                 accessibilityRole="button"
                 disabled={busy}
-                style={[styles.button, styles.buttonDanger, busy ? styles.disabled : null]}
+                style={[styles.button, styles.buttonDanger, compact ? styles.buttonFull : null, busy ? styles.disabled : null]}
                 onPress={() => deleteWorkspaceMutation.mutate(row.workspaceId)}
               >
                 <Text style={styles.buttonTextOn}>Confirm delete</Text>
               </Pressable>
               <Pressable
                 accessibilityRole="button"
-                style={styles.button}
+                style={[styles.button, compact ? styles.buttonFull : null]}
                 onPress={() => setPendingWorkspaceDelete(null)}
               >
                 <Text style={styles.buttonText}>Cancel</Text>
@@ -576,10 +599,10 @@ export function AgentManagerPanel({ theme, host, layout }: PluginSurfaceProps) {
 
   return (
     <View style={styles.screen}>
-      <Text style={styles.headline}>
+      <Text style={styles.headline} numberOfLines={compact ? 2 : 1}>
         {workspaceRows.length} workspaces · {activeWorkspaces.length} active · {archivedWorkspaces.length} archived
       </Text>
-      <Text style={styles.subline}>
+      <Text style={styles.subline} numberOfLines={compact ? 2 : 1}>
         {host.label} · {overview.data?.totals.total ?? 0} sessions · {overview.data?.totals.holdingProcess ?? 0} holding a
         process · {formatBytes(overview.data?.totals.rssBytes ?? 0)}
       </Text>
@@ -616,17 +639,6 @@ export function AgentManagerPanel({ theme, host, layout }: PluginSurfaceProps) {
               Empty workspaces {autoState?.removeEmptyWorkspaces ? "on" : "off"}
             </Text>
           </Pressable>
-          <Pressable
-            accessibilityRole="button"
-            disabled={busy || !autoState}
-            style={[styles.button, busy || !autoState ? styles.disabled : null]}
-            onPress={() => {
-              setFeedback(null);
-              toggleAutoRelease.mutate({ runNow: true });
-            }}
-          >
-            <Text style={styles.buttonText}>Check now</Text>
-          </Pressable>
         </View>
 
         <Text style={styles.blockMeta}>
@@ -645,7 +657,12 @@ export function AgentManagerPanel({ theme, host, layout }: PluginSurfaceProps) {
           <Pressable
             accessibilityRole="button"
             disabled={busy || idleAgents.length === 0}
-            style={[styles.button, styles.buttonPrimary, busy || idleAgents.length === 0 ? styles.disabled : null]}
+            style={[
+              styles.button,
+              styles.buttonPrimary,
+              compact ? styles.buttonFull : null,
+              busy || idleAgents.length === 0 ? styles.disabled : null,
+            ]}
             onPress={() => {
               setFeedback(null);
               releaseIdle.mutate();
@@ -653,7 +670,22 @@ export function AgentManagerPanel({ theme, host, layout }: PluginSurfaceProps) {
           >
             <Text style={styles.buttonTextOn}>Release idle everywhere ({idleAgents.length})</Text>
           </Pressable>
-          <Pressable accessibilityRole="button" style={styles.button} onPress={() => void refreshAll()}>
+          <Pressable
+            accessibilityRole="button"
+            disabled={busy || !autoState}
+            style={[styles.button, compact ? styles.buttonHalf : null, busy || !autoState ? styles.disabled : null]}
+            onPress={() => {
+              setFeedback(null);
+              toggleAutoRelease.mutate({ runNow: true });
+            }}
+          >
+            <Text style={styles.buttonText}>Check now</Text>
+          </Pressable>
+          <Pressable
+            accessibilityRole="button"
+            style={[styles.button, compact ? styles.buttonHalf : null]}
+            onPress={() => void refreshAll()}
+          >
             <Text style={styles.buttonText}>
               {workspaces.isFetching || overview.isFetching ? "Refreshing…" : "Refresh"}
             </Text>
@@ -718,7 +750,7 @@ function renderSystemLine(
     return null;
   }
   return (
-    <Text style={styles.subline as never} numberOfLines={1}>
+    <Text style={styles.subline as never} numberOfLines={2}>
       {parts.map((part, index) => (
         <Text key={part.text} style={part.warn ? { color: theme.colors.statusWarning } : undefined}>
           {index === 0 ? part.text : ` · ${part.text}`}
@@ -728,13 +760,6 @@ function renderSystemLine(
   );
 }
 
-function formatMegabytes(bytes: number): string {
-  const mb = bytes / (1024 * 1024);
-  if (mb >= 1024) {
-    return `${(mb / 1024).toFixed(1)}G`;
-  }
-  return `${Math.round(mb)}M`;
-}
 
 function summarize(label: string, freed: string | null, failed: Array<{ agentId: string; error: string }>): string {
   const head = freed ? `${label} · ${freed} freed` : label;
@@ -744,29 +769,4 @@ function summarize(label: string, freed: string | null, failed: Array<{ agentId:
   return `${head} · ${failed.length} failed: ${failed[0]?.error ?? ""}`;
 }
 
-function formatBytes(bytes: number): string {
-  if (!Number.isFinite(bytes) || bytes <= 0) {
-    return "0 MB";
-  }
-  const mb = bytes / (1024 * 1024);
-  if (mb >= 1024) {
-    return `${(mb / 1024).toFixed(2)} GB`;
-  }
-  return `${mb.toFixed(1)} MB`;
-}
 
-function formatTime(value: string | null): string {
-  if (!value) {
-    return "—";
-  }
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) {
-    return "—";
-  }
-  const minutes = Math.floor((Date.now() - parsed.getTime()) / 60000);
-  if (minutes < 1) return "just now";
-  if (minutes < 60) return `${minutes}m ago`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
-  return `${Math.floor(hours / 24)}d ago`;
-}

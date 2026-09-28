@@ -12,8 +12,8 @@ export interface SystemStats {
   uptimeSeconds: number | null;
 }
 
-const SAMPLE_WINDOW_MS = 200;
-const CACHE_MS = 3000;
+const SAMPLE_WINDOW_MS = 120;
+const CACHE_MS = 10000;
 
 let cache: { at: number; stats: SystemStats } | null = null;
 

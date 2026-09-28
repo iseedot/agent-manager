@@ -1,5 +1,7 @@
 import { readFile, readdir } from "node:fs/promises";
 
+import { readProcStat } from "./util";
+
 export interface AgentProcessInfo {
   pid: number;
   rssBytes: number;
@@ -18,7 +20,19 @@ interface Candidate {
   command: string;
 }
 
+const SCAN_CACHE_MS = 800;
+let scanCache: { at: number; processes: Map<string, AgentProcessInfo> } | null = null;
+
 export async function scanAgentProcesses(): Promise<Map<string, AgentProcessInfo>> {
+  if (scanCache && Date.now() - scanCache.at < SCAN_CACHE_MS) {
+    return scanCache.processes;
+  }
+  const processes = await scanAgentProcessesFresh();
+  scanCache = { at: Date.now(), processes };
+  return processes;
+}
+
+export async function scanAgentProcessesFresh(): Promise<Map<string, AgentProcessInfo>> {
   const found = new Map<string, AgentProcessInfo>();
   if (process.platform !== "linux") {
     return found;
@@ -70,7 +84,7 @@ async function readCandidate(pid: number, daemonPid: number): Promise<Candidate 
   if (!agentId) {
     return null;
   }
-  const stat = await readStat(pid);
+  const stat = await readProcStat(pid);
   if (!stat || stat.ppid !== daemonPid) {
     return null;
   }
@@ -98,25 +112,6 @@ async function readAgentId(pid: number): Promise<string | null> {
       return null;
     }
     return raw.toString("latin1", start + ENV_PREFIX.length, end);
-  } catch {
-    return null;
-  }
-}
-
-async function readStat(pid: number): Promise<{ ppid: number; startTimeTicks: number } | null> {
-  try {
-    const raw = await readFile(`/proc/${pid}/stat`);
-    const close = raw.lastIndexOf(41);
-    if (close < 0) {
-      return null;
-    }
-    const fields = raw.toString("latin1", close + 1).trim().split(/\s+/);
-    const ppid = Number(fields[1]);
-    const startTimeTicks = Number(fields[19]);
-    if (!Number.isFinite(ppid) || !Number.isFinite(startTimeTicks)) {
-      return null;
-    }
-    return { ppid, startTimeTicks };
   } catch {
     return null;
   }

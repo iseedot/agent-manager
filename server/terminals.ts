@@ -1,5 +1,7 @@
 import { readFile, readdir, readlink } from "node:fs/promises";
 
+import { readProcStat } from "./util";
+
 export interface TerminalShell {
   pid: number;
   cwd: string | null;
@@ -19,7 +21,6 @@ export interface TerminalSummary {
 export interface TerminalEntry {
   id: string;
   name: string;
-  title: string | null;
   cwd: string;
   workspaceId: string;
 }
@@ -31,31 +32,9 @@ interface ProcessStat {
 
 const WORKER_MARKER = "terminal-worker";
 
-export async function listWorkspaceTerminals(paseo: TerminalLister, workspaceId: string): Promise<TerminalEntry[]> {
-  const page = await paseo.terminals.list({ workspaceId });
-  const entries = Array.isArray(page?.entries) ? page.entries : [];
-  const terminals: TerminalEntry[] = [];
-  for (const entry of entries) {
-    const id = str(entry?.id);
-    const cwd = str(entry?.cwd);
-    const owner = str(entry?.workspaceId);
-    if (!id || !cwd || owner !== workspaceId) {
-      continue;
-    }
-    terminals.push({
-      id,
-      name: str(entry?.name) ?? id.slice(0, 7),
-      title: str(entry?.title),
-      cwd,
-      workspaceId: owner,
-    });
-  }
-  return terminals;
-}
-
 export interface TerminalLister {
   terminals: {
-    list(options: { workspaceId: string }): Promise<{ entries?: Array<Record<string, unknown>> }>;
+    list(options: Record<string, never>): Promise<{ entries?: Array<Record<string, unknown>> }>;
   };
 }
 
@@ -93,7 +72,6 @@ export async function listAllTerminals(paseo: TerminalLister): Promise<TerminalE
     terminals.push({
       id,
       name: str(entry?.name) ?? id.slice(0, 7),
-      title: str(entry?.title),
       cwd,
       workspaceId: owner,
     });
@@ -161,11 +139,11 @@ async function scanTerminalShellsUncached(): Promise<TerminalShell[]> {
   const children = new Map<number, number[]>();
   const stats = new Map<number, ProcessStat>();
   for (const pid of pids) {
-    const stat = await readStat(pid);
+    const stat = await readProcStat(pid);
     if (!stat) {
       continue;
     }
-    stats.set(pid, stat);
+    stats.set(pid, { ppid: stat.ppid, cpuTicks: stat.cpuTicks });
     const siblings = children.get(stat.ppid);
     if (siblings) {
       siblings.push(pid);
@@ -231,25 +209,6 @@ async function listPids(): Promise<number[]> {
     return (await readdir("/proc")).filter((name) => /^\d+$/.test(name)).map(Number);
   } catch {
     return [];
-  }
-}
-
-async function readStat(pid: number): Promise<ProcessStat | null> {
-  try {
-    const raw = await readFile(`/proc/${pid}/stat`, "latin1");
-    const close = raw.lastIndexOf(")");
-    if (close < 0) {
-      return null;
-    }
-    const fields = raw.slice(close + 2).trim().split(/\s+/);
-    const ppid = Number(fields[1]);
-    const cpuTicks = Number(fields[11]) + Number(fields[12]);
-    if (!Number.isFinite(ppid) || !Number.isFinite(cpuTicks)) {
-      return null;
-    }
-    return { ppid, cpuTicks };
-  } catch {
-    return null;
   }
 }
 

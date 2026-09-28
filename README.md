@@ -61,12 +61,24 @@ outcome when it finishes. A job reopens one tab at a time, so the daemon never h
 reopened process at once. Action buttons lock for a moment after each action, so a re-sorted list
 cannot send a second tap to a different row.
 
+### Reading and refreshing
+
+The panel reads when it opens and then keeps what it has for 30 seconds; regaining window focus does
+not refetch, and nothing polls in the background. `Refresh` (or any action) is what pulls new data,
+except while a workspace job is running, which polls its own progress. The two `/proc` scans the
+panel needs (sessions and terminal shells) share one cached sample for 800 ms, so opening the panel
+scans the process table once instead of twice. Release and verification paths bypass that cache, so
+they always see the current process table.
+
+On a phone the panel switches to a stacked layout: every action button takes a full row, the badges
+and switches wrap instead of squeezing, and the header lines may use two lines.
+
 ### Host line
 
 Under the workspace summary the panel shows the host itself, top style: load average, CPU busy
 across all cores, used/total memory, and used/total swap (only when the host has swap). CPU is a
-200 ms sample taken at most once every three seconds, so opening the panel costs one sample, and the
-memory number uses the same definition as `free` and `top` on a current procps (`total - MemAvailable`).
+120 ms sample reused for ten seconds, so opening the panel costs one sample, and the memory number
+uses the same definition as `free` and `top` on a current procps (`total - MemAvailable`).
 Values turn yellow when memory passes 90 %, swap 50 %, or CPU 80 %. On a host without `/proc` the
 line is omitted.
 
