@@ -12,6 +12,7 @@ import {
   type OwnedAgentSubscription,
 } from "./daemon-client";
 import { killAgentViaDaemonMcp, paseoHome } from "./daemon-mcp";
+import { fireAndForget } from "./guard";
 import { scanAgentProcesses } from "./processes";
 import { describe, serializeWrite, str, writeJsonAtomic } from "./util";
 import { deleteWorkspace, listWorkspaceRows } from "./workspaces";
@@ -71,9 +72,9 @@ export function startAutoReleaseScheduler(): () => void {
     return () => {};
   }
   schedulerTimer = setInterval(() => {
-    void tick();
+    fireAndForget(tick(), "scheduler tick");
   }, TICK_MS);
-  void activate();
+  fireAndForget(activate(), "initial sweep");
   return () => {
     if (schedulerTimer) {
       clearInterval(schedulerTimer);
@@ -165,7 +166,7 @@ async function activate(): Promise<void> {
     }
     if (!loaded) {
       loaded = true;
-      void sweep(state.onLoad);
+      fireAndForget(sweep(state.onLoad), "load sweep");
     }
   } catch (error) {
     holdDaemonClient(false);
@@ -205,7 +206,7 @@ function onAgentUpdate(message: unknown): void {
 }
 
 function armFrom(agentId: string, agent: RawLiveAgent | undefined): void {
-  void (async () => {
+  fireAndForget((async () => {
     const state = { ...DEFAULT_STATE, ...(await readStoredState()) };
     if (!state.enabled) {
       return;
@@ -214,7 +215,7 @@ function armFrom(agentId: string, agent: RawLiveAgent | undefined): void {
     const lastActivity = await readLastActivity(recordPath, str(agent?.updatedAt));
     const dueAt = (lastActivity ?? Date.now()) + state.idleMinutes * 60000;
     armTimer(agentId, Math.max(1000, dueAt - Date.now()));
-  })();
+  })(), `arm ${agentId.slice(0, 7)}`);
 }
 
 function armTimer(agentId: string, delayMs: number): void {
@@ -224,7 +225,7 @@ function armTimer(agentId: string, delayMs: number): void {
   cancelTimer(agentId);
   const timer = setTimeout(() => {
     timers.delete(agentId);
-    void releaseArmedAgent(agentId);
+    fireAndForget(releaseArmedAgent(agentId), `release ${agentId.slice(0, 7)}`);
   }, delayMs);
   timers.set(agentId, timer);
 }
@@ -287,8 +288,15 @@ async function sweep(mode: AutoReleaseState["onLoad"]): Promise<void> {
     running = false;
   }
 
-  const removed = state.removeEmptyWorkspaces ? await removeEmptyWorkspaces() : [];
-  await recordRun(state, released, removed, skipped, error);
+  let removed: Array<{ workspaceId: string; name: string | null }> = [];
+  try {
+    removed = state.removeEmptyWorkspaces ? await removeEmptyWorkspaces() : [];
+  } catch (removalError) {
+    error = describe(removalError);
+  }
+  await recordRun(state, released, removed, skipped, error).catch((recordError) => {
+    console.log(`agent-manager could not record the sweep: ${describe(recordError)}`);
+  });
 }
 
 async function releaseArmedAgent(agentId: string): Promise<void> {

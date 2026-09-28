@@ -17,6 +17,7 @@ import {
 import { releaseAgents } from "./server/actions";
 import { readAutoReleaseState, startAutoReleaseScheduler, updateAutoReleaseState } from "./server/auto-release";
 import { disposeDaemonClient } from "./server/daemon-client";
+import { installCrashGuards } from "./server/guard";
 import { paseoHome } from "./server/daemon-mcp";
 import { buildOverview, type PaseoLike } from "./server/overview";
 import { closeTerminals, listAllTerminals, listWorkspaceTerminals, summarizeTerminals, type TerminalKiller, type TerminalLister } from "./server/terminals";
@@ -31,6 +32,8 @@ import {
 } from "./server/workspaces";
 
 export default function contribute(server: PluginServerContext) {
+  const removeCrashGuards = installCrashGuards();
+
   server.handle(overviewRpc, async (_input, { paseo }) => buildOverview(paseo as unknown as never));
 
   server.handle(releaseManyRpc, async ({ agentIds, allowSignalFallback }) =>
@@ -101,6 +104,7 @@ export default function contribute(server: PluginServerContext) {
 
   return () => {
     stopAutoRelease();
+    removeCrashGuards();
     void disposeDaemonClient();
   };
 }
