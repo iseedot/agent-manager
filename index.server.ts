@@ -3,12 +3,10 @@ import type { PluginServerContext } from "@getpaseo/plugin/server";
 import {
   autoReleaseSetRpc,
   autoReleaseStateRpc,
-  browseRpc,
   jobStatusRpc,
   moveStatusRpc,
   overviewRpc,
   projectsRpc,
-  readFileRpc,
   releaseManyRpc,
   workspaceActivateRpc,
   workspaceArchiveRpc,
@@ -22,7 +20,6 @@ import {
 } from "./shared/contracts";
 import { releaseAgents } from "./server/actions";
 import { readAutoReleaseState, startAutoReleaseScheduler, updateAutoReleaseState } from "./server/auto-release";
-import { browseDirectory, readTextFile } from "./server/browse";
 import { disposeDaemonClient } from "./server/daemon-client";
 import { installCrashGuards } from "./server/guard";
 import { paseoHome } from "./server/daemon-mcp";
@@ -121,10 +118,6 @@ export default function contribute(server: PluginServerContext) {
   );
 
   server.handle(moveStatusRpc, async () => readMoveStatus());
-
-  server.handle(browseRpc, async ({ path }) => browseDirectory(path));
-
-  server.handle(readFileRpc, async ({ path }) => readTextFile(path));
 
   const stopAutoRelease = startAutoReleaseScheduler();
 
