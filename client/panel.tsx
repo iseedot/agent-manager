@@ -5,7 +5,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ActivityIndicator, Pressable, ScrollView, Text, View } from "react-native";
 
 import {
-  autoReleaseSetRpc,
   autoReleaseStateRpc,
   overviewRpc,
   releaseManyRpc,
@@ -45,7 +44,6 @@ export function AgentManagerPanel({ theme, host, layout }: PluginSurfaceProps) {
   const fetchTerminals = useRpc(terminalsRpc);
   const closeWorkspaceTerminals = useRpc(terminalsCloseRpc);
   const readAutoRelease = useRpc(autoReleaseStateRpc);
-  const writeAutoRelease = useRpc(autoReleaseSetRpc);
 
   const [pendingArchive, setPendingArchive] = useState<string | null>(null);
   const [pendingWorkspaceDelete, setPendingWorkspaceDelete] = useState<string | null>(null);
@@ -146,25 +144,21 @@ export function AgentManagerPanel({ theme, host, layout }: PluginSurfaceProps) {
     onError: (error) => setFeedback(`Failed: ${message(error)}`),
   });
 
-  const toggleAutoRelease = useMutation({
-    mutationFn: (input: { enabled?: boolean; runNow?: boolean }) => writeAutoRelease(input),
-    onSuccess: async (state) => {
-      setFeedback(
-        state.enabled
-          ? `Auto-release on · every ${state.intervalMinutes} min · idle over ${state.idleMinutes} min`
-          : "Auto-release off",
-      );
+  const archiveWorkspaceMutation = useMutation({
+    mutationFn: (input: { workspaceId: string; confirmLastActive: boolean }) => archiveWorkspace(input),
+    onSuccess: async (result) => {
+      setPendingArchive(null);
+      setFeedback(result.refused ? `Blocked: ${result.message}` : result.ok ? result.message : `Failed: ${result.message}`);
       coolDown();
       await refreshAll();
     },
     onError: (error) => setFeedback(`Failed: ${message(error)}`),
   });
 
-  const archiveWorkspaceMutation = useMutation({
-    mutationFn: (input: { workspaceId: string; confirmLastActive: boolean }) => archiveWorkspace(input),
+  const closeTabsMutation = useMutation({
+    mutationFn: (workspaceId: string) => closeWorkspaceTabs({ workspaceId }),
     onSuccess: async (result) => {
-      setPendingArchive(null);
-      setFeedback(result.refused ? `Blocked: ${result.message}` : result.ok ? result.message : `Failed: ${result.message}`);
+      setFeedback(result.message);
       coolDown();
       await refreshAll();
     },
@@ -186,16 +180,6 @@ export function AgentManagerPanel({ theme, host, layout }: PluginSurfaceProps) {
     onError: (error) => setFeedback(`Failed: ${message(error)}`),
   });
 
-  const closeTabsMutation = useMutation({
-    mutationFn: (workspaceId: string) => closeWorkspaceTabs({ workspaceId }),
-    onSuccess: async (result) => {
-      setFeedback(result.message);
-      coolDown();
-      await refreshAll();
-    },
-    onError: (error) => setFeedback(`Failed: ${message(error)}`),
-  });
-
   const deleteWorkspaceMutation = useMutation({
     mutationFn: (workspaceId: string) => deleteWorkspace({ workspaceId }),
     onSuccess: async (result) => {
@@ -210,7 +194,6 @@ export function AgentManagerPanel({ theme, host, layout }: PluginSurfaceProps) {
   const busy =
     releaseWorkspace.isPending ||
     releaseIdle.isPending ||
-    toggleAutoRelease.isPending ||
     archiveWorkspaceMutation.isPending ||
     closeTabsMutation.isPending ||
     closeTerminalsMutation.isPending ||
@@ -222,6 +205,8 @@ export function AgentManagerPanel({ theme, host, layout }: PluginSurfaceProps) {
   const activeWorkspaces = useMemo(() => workspaceRows.filter((row) => !row.archivedAt), [workspaceRows]);
   const archivedWorkspaces = useMemo(() => workspaceRows.filter((row) => row.archivedAt), [workspaceRows]);
   const sharedPaths = useMemo(() => pathGroups(workspaceRows), [workspaceRows]);
+  const autoState = autoRelease.data;
+
   const terminalsByWorkspace = useMemo(() => {
     const map = new Map<string, { count: number; busy: number; rssBytes: number }>();
     for (const row of terminals.data?.workspaces ?? []) {
@@ -229,93 +214,47 @@ export function AgentManagerPanel({ theme, host, layout }: PluginSurfaceProps) {
     }
     return map;
   }, [terminals.data?.workspaces]);
-  const terminalTotals = useMemo(() => {
-    let count = 0;
-    let rssBytes = 0;
-    for (const row of terminals.data?.workspaces ?? []) {
-      count += row.count;
-      rssBytes += row.rssBytes;
-    }
-    return { count, rssBytes };
-  }, [terminals.data?.workspaces]);
-  const autoState = autoRelease.data;
 
   const styles = useMemo(() => {
     const palette = theme.colors;
     return {
-      screen: { flex: 1, backgroundColor: palette.surface0, padding: layout.compact ? 12 : 20 },
-      headline: { color: palette.foreground, fontSize: 16, fontWeight: "600" as const },
-      subline: { color: palette.foregroundMuted, fontSize: 12, marginTop: 3 },
-      block: {
-        borderWidth: 1,
-        borderColor: palette.border,
-        borderRadius: 10,
-        padding: 12,
-        gap: 8,
-        marginTop: 14,
-        backgroundColor: palette.surface1,
-      },
-      blockHead: {
-        flexDirection: "row" as const,
-        alignItems: "center" as const,
-        flexWrap: "wrap" as const,
-        gap: 6,
-      },
-      blockTitle: { color: palette.foreground, fontSize: 13, fontWeight: "600" as const, flexGrow: 1 },
-      blockMeta: { color: palette.foregroundMuted, fontSize: 12, lineHeight: 17 },
-      sectionTitle: {
+      screen: { flex: 1, backgroundColor: palette.surface0, padding: compact ? 14 : 20 },
+      headline: { color: palette.foreground, fontSize: compact ? 15 : 16, fontWeight: "600" as const },
+      subline: { color: palette.foregroundMuted, fontSize: 12, marginTop: 3, lineHeight: 17 },
+      toolbar: { flexDirection: "row" as const, flexWrap: "wrap" as const, gap: 8, marginTop: 14 },
+      sectionLabel: {
         color: palette.foregroundMuted,
-        fontSize: 12,
+        fontSize: 11,
         fontWeight: "600" as const,
-        marginTop: 18,
-        marginBottom: 2,
+        letterSpacing: 0.6,
+        marginTop: 20,
+        marginBottom: 4,
       },
       wsRow: {
         borderTopWidth: 1,
         borderTopColor: palette.border,
-        paddingVertical: 12,
-        gap: 4,
+        paddingVertical: compact ? 12 : 10,
+        gap: 3,
       },
-      wsHead: {
-        flexDirection: "row" as const,
-        alignItems: "center" as const,
-        flexWrap: "wrap" as const,
-        gap: 6,
-      },
-      wsName: { color: palette.foreground, fontSize: 14, fontWeight: "600" as const, flexShrink: 1, flexGrow: 1 },
-      chip: { paddingHorizontal: 8, paddingVertical: 3, borderRadius: 999, backgroundColor: palette.surface2 },
-      chipText: { color: palette.foregroundMuted, fontSize: 11 },
-      wsMeta: { color: palette.foregroundMuted, fontSize: 12 },
-      actions: { flexDirection: "row" as const, flexWrap: "wrap" as const, gap: 6, marginTop: 8 },
+      wsName: { color: palette.foreground, fontSize: 14, fontWeight: "600" as const },
+      wsMeta: { color: palette.foregroundMuted, fontSize: 12, lineHeight: 17 },
+      wsFacts: { color: palette.foreground, fontSize: 12, lineHeight: 17 },
+      actions: { flexDirection: "row" as const, flexWrap: "wrap" as const, gap: 8, marginTop: 8 },
       button: {
-        paddingHorizontal: 11,
-        paddingVertical: 7,
-        borderRadius: 7,
+        minHeight: 34,
+        justifyContent: "center" as const,
+        alignItems: "center" as const,
+        paddingHorizontal: 12,
+        borderRadius: 8,
         backgroundColor: palette.surface2,
         borderWidth: 1,
         borderColor: palette.border,
       },
       buttonPrimary: { backgroundColor: palette.accent, borderColor: palette.accent },
       buttonDanger: { backgroundColor: palette.statusDanger, borderColor: palette.statusDanger },
-      buttonLink: { backgroundColor: "transparent", borderColor: "transparent", paddingHorizontal: 6 },
-      buttonFull: { flexBasis: "100%" as const, alignItems: "center" as const },
-      buttonHalf: { flexBasis: "47%" as const, alignItems: "center" as const },
+      buttonHalf: { flexBasis: "48%" as const, flexGrow: 1 },
       buttonText: { color: palette.foreground, fontSize: 12 },
       buttonTextOn: { color: palette.accentForeground, fontSize: 12 },
-      toggle: {
-        flexDirection: "row" as const,
-        alignItems: "center" as const,
-        gap: 6,
-        paddingHorizontal: 10,
-        paddingVertical: 6,
-        borderRadius: 999,
-        borderWidth: 1,
-        borderColor: palette.border,
-        backgroundColor: palette.surface2,
-      },
-      toggleOn: { backgroundColor: palette.accent, borderColor: palette.accent },
-      toggleText: { color: palette.foreground, fontSize: 12 },
-      toggleTextOn: { color: palette.accentForeground, fontSize: 12 },
       disabled: { opacity: 0.45 },
       confirm: {
         borderWidth: 1,
@@ -326,18 +265,20 @@ export function AgentManagerPanel({ theme, host, layout }: PluginSurfaceProps) {
         marginTop: 8,
       },
       confirmText: { color: palette.foreground, fontSize: 12, lineHeight: 17 },
-      warning: { color: palette.statusWarning, fontSize: 12, marginTop: 10 },
+      warning: { color: palette.statusWarning, fontSize: 12, marginTop: 10, lineHeight: 17 },
       empty: { color: palette.foregroundMuted, fontSize: 13, paddingVertical: 20 },
       footer: {
         color: palette.foregroundMuted,
-        fontSize: 12,
-        marginTop: 14,
+        fontSize: 11,
+        lineHeight: 16,
+        marginTop: 12,
         paddingTop: 10,
         borderTopWidth: 1,
         borderTopColor: palette.border,
       },
+      jobRow: { marginTop: 10 },
     };
-  }, [theme, layout.compact]);
+  }, [theme, compact]);
 
   if (workspaces.isLoading && !workspaces.data) {
     return (
@@ -363,12 +304,19 @@ export function AgentManagerPanel({ theme, host, layout }: PluginSurfaceProps) {
     const alsoActive = archived
       ? []
       : activeAtPath(workspaceRows, row).filter((entry) => entry.workspaceId !== row.workspaceId);
-    const detail = [
-      row.cwd,
+    const terminalInfo = terminalsByWorkspace.get(row.workspaceId);
+    const facts = [
+      stats.holding > 0 ? `${stats.holding} holding · ${formatBytes(stats.rssBytes)}` : null,
       `${stats.total} sessions`,
       stats.running > 0 ? `${stats.running} running` : null,
+      terminalInfo && terminalInfo.count > 0
+        ? `${terminalInfo.count} terminal${terminalInfo.count === 1 ? "" : "s"} ${formatBytes(terminalInfo.rssBytes)}${
+            terminalInfo.busy > 0 ? ` (${terminalInfo.busy} busy)` : ""
+          }`
+        : null,
       row.kind === "directory" ? null : row.kind,
       row.projectName,
+      alsoActive.length > 0 ? `+${alsoActive.length} active here` : null,
       archived && row.archivedAt ? `archived ${formatTime(row.archivedAt)}` : null,
     ]
       .filter(Boolean)
@@ -376,37 +324,14 @@ export function AgentManagerPanel({ theme, host, layout }: PluginSurfaceProps) {
 
     return (
       <View key={row.workspaceId} style={styles.wsRow}>
-        <View style={styles.wsHead}>
-          <Text style={styles.wsName} numberOfLines={1}>
-            {label}
-          </Text>
-          {stats.holding > 0 ? (
-            <View style={styles.chip}>
-              <Text style={styles.chipText}>
-                {stats.holding} holding · {formatBytes(stats.rssBytes)}
-              </Text>
-            </View>
-          ) : null}
-          {alsoActive.length > 0 ? (
-            <View style={styles.chip}>
-              <Text style={styles.chipText}>+{alsoActive.length} active here</Text>
-            </View>
-          ) : null}
-          {(terminalsByWorkspace.get(row.workspaceId)?.count ?? 0) > 0 ? (
-            <View style={styles.chip}>
-              <Text style={styles.chipText}>
-                {terminalsByWorkspace.get(row.workspaceId)?.count} terminal
-                {(terminalsByWorkspace.get(row.workspaceId)?.count ?? 0) === 1 ? "" : "s"} ·{" "}
-                {formatBytes(terminalsByWorkspace.get(row.workspaceId)?.rssBytes ?? 0)}
-                {(terminalsByWorkspace.get(row.workspaceId)?.busy ?? 0) > 0
-                  ? ` · ${terminalsByWorkspace.get(row.workspaceId)?.busy} busy`
-                  : ""}
-              </Text>
-            </View>
-          ) : null}
-        </View>
+        <Text style={styles.wsName} numberOfLines={1}>
+          {label}
+        </Text>
         <Text style={styles.wsMeta} numberOfLines={1}>
-          {detail}
+          {row.cwd}
+        </Text>
+        <Text style={styles.wsFacts} numberOfLines={2}>
+          {facts}
         </Text>
 
         {archived ? (
@@ -414,7 +339,12 @@ export function AgentManagerPanel({ theme, host, layout }: PluginSurfaceProps) {
             <Pressable
               accessibilityRole="button"
               disabled={busy}
-              style={[styles.button, styles.buttonPrimary, compact ? styles.buttonFull : null, busy ? styles.disabled : null]}
+              style={[
+                styles.button,
+                styles.buttonPrimary,
+                compact ? styles.buttonHalf : null,
+                busy ? styles.disabled : null,
+              ]}
               onPress={() => {
                 setFeedback(null);
                 jobs.activate({ workspaceId: row.workspaceId, workspaceName: label, release: true });
@@ -425,7 +355,7 @@ export function AgentManagerPanel({ theme, host, layout }: PluginSurfaceProps) {
             <Pressable
               accessibilityRole="button"
               disabled={busy}
-              style={[styles.button, styles.buttonDanger, compact ? styles.buttonFull : null, busy ? styles.disabled : null]}
+              style={[styles.button, styles.buttonDanger, compact ? styles.buttonHalf : null, busy ? styles.disabled : null]}
               onPress={() => {
                 setPendingArchive(null);
                 setPendingWorkspaceDelete(row.workspaceId);
@@ -439,47 +369,59 @@ export function AgentManagerPanel({ theme, host, layout }: PluginSurfaceProps) {
             <Pressable
               accessibilityRole="button"
               disabled={busy || stats.holding === 0}
-              style={[styles.button, styles.buttonPrimary, busy || stats.holding === 0 ? styles.disabled : null]}
+              style={[
+                styles.button,
+                styles.buttonPrimary,
+                compact ? styles.buttonHalf : null,
+                busy || stats.holding === 0 ? styles.disabled : null,
+              ]}
               onPress={() => {
                 setFeedback(null);
                 releaseWorkspace.mutate(row.workspaceId);
               }}
             >
-              <Text style={styles.buttonTextOn}>Release workspace ({stats.holding})</Text>
+              <Text style={styles.buttonTextOn}>Release ({stats.holding})</Text>
             </Pressable>
             <Pressable
               accessibilityRole="button"
               disabled={busy || stats.archived === 0}
-              style={[styles.button, compact ? styles.buttonFull : null, busy || stats.archived === 0 ? styles.disabled : null]}
+              style={[
+                styles.button,
+                compact ? styles.buttonHalf : null,
+                busy || stats.archived === 0 ? styles.disabled : null,
+              ]}
               onPress={() => {
                 setFeedback(null);
                 jobs.activate({ workspaceId: row.workspaceId, workspaceName: label, release: true, tabsOnly: true });
               }}
             >
-              <Text style={styles.buttonText}>Reopen tabs ({stats.archived})</Text>
+              <Text style={styles.buttonText}>Reopen ({stats.archived})</Text>
             </Pressable>
             <Pressable
               accessibilityRole="button"
               disabled={busy || stats.open === 0}
-              style={[styles.button, compact ? styles.buttonFull : null, busy || stats.open === 0 ? styles.disabled : null]}
+              style={[
+                styles.button,
+                compact ? styles.buttonHalf : null,
+                busy || stats.open === 0 ? styles.disabled : null,
+              ]}
               onPress={() => {
                 setFeedback(null);
                 closeTabsMutation.mutate(row.workspaceId);
               }}
             >
-              <Text style={styles.buttonText}>Close tabs ({stats.open})</Text>
+              <Text style={styles.buttonText}>Tabs ({stats.open})</Text>
             </Pressable>
             <Pressable
               accessibilityRole="button"
-              disabled={busy || (terminalsByWorkspace.get(row.workspaceId)?.count ?? 0) === 0}
+              disabled={busy || (terminalInfo?.count ?? 0) === 0}
               style={[
                 styles.button,
-                compact ? styles.buttonFull : null,
-                busy || (terminalsByWorkspace.get(row.workspaceId)?.count ?? 0) === 0 ? styles.disabled : null,
+                compact ? styles.buttonHalf : null,
+                busy || (terminalInfo?.count ?? 0) === 0 ? styles.disabled : null,
               ]}
               onPress={() => {
-                const info = terminalsByWorkspace.get(row.workspaceId);
-                if ((info?.busy ?? 0) > 0) {
+                if ((terminalInfo?.busy ?? 0) > 0) {
                   setPendingTerminals(row.workspaceId);
                   return;
                 }
@@ -487,14 +429,12 @@ export function AgentManagerPanel({ theme, host, layout }: PluginSurfaceProps) {
                 closeTerminalsMutation.mutate(row.workspaceId);
               }}
             >
-              <Text style={styles.buttonText}>
-                Close terminals ({terminalsByWorkspace.get(row.workspaceId)?.count ?? 0})
-              </Text>
+              <Text style={styles.buttonText}>Terminals ({terminalInfo?.count ?? 0})</Text>
             </Pressable>
             <Pressable
               accessibilityRole="button"
               disabled={busy}
-              style={[styles.button, compact ? styles.buttonFull : null, busy ? styles.disabled : null]}
+              style={[styles.button, compact ? styles.buttonHalf : null, busy ? styles.disabled : null]}
               onPress={() => {
                 setPendingWorkspaceDelete(null);
                 setPendingArchive(row.workspaceId);
@@ -518,27 +458,30 @@ export function AgentManagerPanel({ theme, host, layout }: PluginSurfaceProps) {
             </Text>
             {lastActive ? (
               <Text style={styles.confirmText}>
-                Only active workspace at this path — Paseo reopens "
-                {candidate ? workspaceLabel(candidate) : "an archived one"}" here next time.
+                Only active workspace at this path — Paseo reopens "{candidate ? workspaceLabel(candidate) : "an archived one"}
+                " here next time.
               </Text>
             ) : null}
             {stats.total > 0 ? (
-              <Text style={styles.wsMeta}>Close tabs frees the same memory without archiving.</Text>
+              <Text style={styles.wsMeta}>Tabs closes them without archiving, which frees the same memory.</Text>
             ) : null}
             <View style={styles.actions}>
               <Pressable
                 accessibilityRole="button"
                 disabled={busy}
-                style={[styles.button, styles.buttonDanger, compact ? styles.buttonFull : null, busy ? styles.disabled : null]}
-                onPress={() =>
-                  archiveWorkspaceMutation.mutate({ workspaceId: row.workspaceId, confirmLastActive: true })
-                }
+                style={[
+                  styles.button,
+                  styles.buttonDanger,
+                  compact ? styles.buttonHalf : null,
+                  busy ? styles.disabled : null,
+                ]}
+                onPress={() => archiveWorkspaceMutation.mutate({ workspaceId: row.workspaceId, confirmLastActive: true })}
               >
                 <Text style={styles.buttonTextOn}>Confirm archive</Text>
               </Pressable>
               <Pressable
                 accessibilityRole="button"
-                style={[styles.button, compact ? styles.buttonFull : null]}
+                style={[styles.button, compact ? styles.buttonHalf : null]}
                 onPress={() => setPendingArchive(null)}
               >
                 <Text style={styles.buttonText}>Cancel</Text>
@@ -550,19 +493,28 @@ export function AgentManagerPanel({ theme, host, layout }: PluginSurfaceProps) {
         {pendingTerminals === row.workspaceId ? (
           <View style={styles.confirm}>
             <Text style={styles.confirmText}>
-              Close {terminalsByWorkspace.get(row.workspaceId)?.count ?? 0} terminal(s) in "{label}"?{" "}
-              {terminalsByWorkspace.get(row.workspaceId)?.busy ?? 0} are running a command — it stops.
+              Close {terminalInfo?.count ?? 0} terminal(s) in "{label}"? {terminalInfo?.busy ?? 0} are running a command —
+              it stops.
             </Text>
             <View style={styles.actions}>
               <Pressable
                 accessibilityRole="button"
                 disabled={busy}
-                style={[styles.button, styles.buttonDanger, compact ? styles.buttonFull : null, busy ? styles.disabled : null]}
+                style={[
+                  styles.button,
+                  styles.buttonDanger,
+                  compact ? styles.buttonHalf : null,
+                  busy ? styles.disabled : null,
+                ]}
                 onPress={() => closeTerminalsMutation.mutate(row.workspaceId)}
               >
                 <Text style={styles.buttonTextOn}>Confirm close</Text>
               </Pressable>
-              <Pressable accessibilityRole="button" style={styles.button} onPress={() => setPendingTerminals(null)}>
+              <Pressable
+                accessibilityRole="button"
+                style={[styles.button, compact ? styles.buttonHalf : null]}
+                onPress={() => setPendingTerminals(null)}
+              >
                 <Text style={styles.buttonText}>Cancel</Text>
               </Pressable>
             </View>
@@ -578,14 +530,19 @@ export function AgentManagerPanel({ theme, host, layout }: PluginSurfaceProps) {
               <Pressable
                 accessibilityRole="button"
                 disabled={busy}
-                style={[styles.button, styles.buttonDanger, compact ? styles.buttonFull : null, busy ? styles.disabled : null]}
+                style={[
+                  styles.button,
+                  styles.buttonDanger,
+                  compact ? styles.buttonHalf : null,
+                  busy ? styles.disabled : null,
+                ]}
                 onPress={() => deleteWorkspaceMutation.mutate(row.workspaceId)}
               >
                 <Text style={styles.buttonTextOn}>Confirm delete</Text>
               </Pressable>
               <Pressable
                 accessibilityRole="button"
-                style={[styles.button, compact ? styles.buttonFull : null]}
+                style={[styles.button, compact ? styles.buttonHalf : null]}
                 onPress={() => setPendingWorkspaceDelete(null)}
               >
                 <Text style={styles.buttonText}>Cancel</Text>
@@ -599,100 +556,41 @@ export function AgentManagerPanel({ theme, host, layout }: PluginSurfaceProps) {
 
   return (
     <View style={styles.screen}>
-      <Text style={styles.headline} numberOfLines={compact ? 2 : 1}>
+      <Text style={styles.headline} numberOfLines={2}>
         {workspaceRows.length} workspaces · {activeWorkspaces.length} active · {archivedWorkspaces.length} archived
       </Text>
-      <Text style={styles.subline} numberOfLines={compact ? 2 : 1}>
-        {host.label} · {overview.data?.totals.total ?? 0} sessions · {overview.data?.totals.holdingProcess ?? 0} holding a
-        process · {formatBytes(overview.data?.totals.rssBytes ?? 0)}
+      <Text style={styles.subline} numberOfLines={2}>
+        {host.label} · {overview.data?.totals.total ?? 0} sessions · {overview.data?.totals.holdingProcess ?? 0} holding ·{" "}
+        {formatBytes(overview.data?.totals.rssBytes ?? 0)}
       </Text>
       {renderSystemLine(system.data, styles, theme)}
 
-      <View style={styles.block}>
-        <View style={styles.blockHead}>
-          <Text style={styles.blockTitle}>Memory</Text>
-          <Pressable
-            accessibilityRole="button"
-            disabled={busy || !autoState}
-            style={[
-              styles.toggle,
-              autoState?.enabled ? styles.toggleOn : null,
-              busy || !autoState ? styles.disabled : null,
-            ]}
-            onPress={() => toggleAutoRelease.mutate({ enabled: !autoState?.enabled })}
-          >
-            <Text style={autoState?.enabled ? styles.toggleTextOn : styles.toggleText}>
-              Auto-release {autoState?.enabled ? "on" : "off"}
-            </Text>
-          </Pressable>
-          <Pressable
-            accessibilityRole="button"
-            disabled={busy || !autoState}
-            style={[
-              styles.toggle,
-              autoState?.removeEmptyWorkspaces ? styles.toggleOn : null,
-              busy || !autoState ? styles.disabled : null,
-            ]}
-            onPress={() => toggleAutoRelease.mutate({ removeEmptyWorkspaces: !autoState?.removeEmptyWorkspaces })}
-          >
-            <Text style={autoState?.removeEmptyWorkspaces ? styles.toggleTextOn : styles.toggleText}>
-              Empty workspaces {autoState?.removeEmptyWorkspaces ? "on" : "off"}
-            </Text>
-          </Pressable>
-        </View>
-
-        <Text style={styles.blockMeta}>
-          idle &gt; {autoState?.idleMinutes ?? 10} min
-          {autoState?.lastRunAt ? ` · ${formatTime(autoState.lastRunAt)}` : ""}
-          {autoState && autoState.lastReleased.length > 0 ? ` · released ${autoState.lastReleased.length}` : ""}
-          {autoState && autoState.lastRemovedWorkspaces.length > 0
-            ? ` · removed ${autoState.lastRemovedWorkspaces.length}`
-            : ""}
-          {autoState?.lastSkipped ? ` · skipped ${autoState.lastSkipped}` : ""}
-          {terminalTotals.count > 0 ? ` · ${terminalTotals.count} terminals ${formatBytes(terminalTotals.rssBytes)}` : ""}
-          {autoState?.lastError ? ` · ${autoState.lastError}` : ""}
-        </Text>
-
-        <View style={styles.actions}>
-          <Pressable
-            accessibilityRole="button"
-            disabled={busy || idleAgents.length === 0}
-            style={[
-              styles.button,
-              styles.buttonPrimary,
-              compact ? styles.buttonFull : null,
-              busy || idleAgents.length === 0 ? styles.disabled : null,
-            ]}
-            onPress={() => {
-              setFeedback(null);
-              releaseIdle.mutate();
-            }}
-          >
-            <Text style={styles.buttonTextOn}>Release idle everywhere ({idleAgents.length})</Text>
-          </Pressable>
-          <Pressable
-            accessibilityRole="button"
-            disabled={busy || !autoState}
-            style={[styles.button, compact ? styles.buttonHalf : null, busy || !autoState ? styles.disabled : null]}
-            onPress={() => {
-              setFeedback(null);
-              toggleAutoRelease.mutate({ runNow: true });
-            }}
-          >
-            <Text style={styles.buttonText}>Check now</Text>
-          </Pressable>
-          <Pressable
-            accessibilityRole="button"
-            style={[styles.button, compact ? styles.buttonHalf : null]}
-            onPress={() => void refreshAll()}
-          >
-            <Text style={styles.buttonText}>
-              {workspaces.isFetching || overview.isFetching ? "Refreshing…" : "Refresh"}
-            </Text>
-          </Pressable>
-        </View>
-
-        <JobLine job={jobs.job} error={jobs.error} busy={jobs.busy} theme={theme} />
+      <View style={styles.toolbar}>
+        <Pressable
+          accessibilityRole="button"
+          disabled={busy || idleAgents.length === 0}
+          style={[
+            styles.button,
+            styles.buttonPrimary,
+            compact ? styles.buttonHalf : null,
+            busy || idleAgents.length === 0 ? styles.disabled : null,
+          ]}
+          onPress={() => {
+            setFeedback(null);
+            releaseIdle.mutate();
+          }}
+        >
+          <Text style={styles.buttonTextOn}>Release idle ({idleAgents.length})</Text>
+        </Pressable>
+        <Pressable
+          accessibilityRole="button"
+          style={[styles.button, compact ? styles.buttonHalf : null]}
+          onPress={() => void refreshAll()}
+        >
+          <Text style={styles.buttonText}>
+            {workspaces.isFetching || overview.isFetching ? "Refreshing…" : "Refresh"}
+          </Text>
+        </Pressable>
       </View>
 
       {sharedPaths.map((group) => (
@@ -702,19 +600,36 @@ export function AgentManagerPanel({ theme, host, layout }: PluginSurfaceProps) {
       ))}
 
       <ScrollView>
-        <Text style={styles.sectionTitle}>Active ({activeWorkspaces.length})</Text>
+        <Text style={styles.sectionLabel}>ACTIVE · {activeWorkspaces.length}</Text>
         {activeWorkspaces.map((row) => renderWorkspace(row, false))}
         {activeWorkspaces.length === 0 ? <Text style={styles.empty}>No active workspace.</Text> : null}
 
-        <Text style={styles.sectionTitle}>Archived ({archivedWorkspaces.length})</Text>
+        <Text style={styles.sectionLabel}>ARCHIVED · {archivedWorkspaces.length}</Text>
         {archivedWorkspaces.map((row) => renderWorkspace(row, true))}
         {archivedWorkspaces.length === 0 ? <Text style={styles.empty}>No archived workspace.</Text> : null}
       </ScrollView>
 
+      <View style={styles.jobRow}>
+        <JobLine job={jobs.job} error={jobs.error} busy={jobs.busy} theme={theme} />
+      </View>
+
       {overview.data?.warning ? <Text style={styles.warning}>{overview.data.warning}</Text> : null}
+      <Text style={styles.footer}>{autoReleaseLine(autoState)}</Text>
       {feedback ? <Text style={styles.footer}>{feedback}</Text> : null}
     </View>
   );
+}
+
+function autoReleaseLine(state: { enabled: boolean; idleMinutes: number; lastRunAt: string | null; lastReleased: unknown[] } | undefined): string {
+  if (!state) {
+    return "auto-release · reading state…";
+  }
+  if (!state.enabled) {
+    return "auto-release off (panel control removed; edit ~/.paseo/agent-manager/auto-release.json to change)";
+  }
+  const released = state.lastReleased.length > 0 ? ` · released ${state.lastReleased.length}` : "";
+  const last = state.lastRunAt ? ` · last ${formatTime(state.lastRunAt)}` : "";
+  return `auto-release on · idle > ${state.idleMinutes} min${last}${released}`;
 }
 
 function renderSystemLine(
@@ -760,7 +675,6 @@ function renderSystemLine(
   );
 }
 
-
 function summarize(label: string, freed: string | null, failed: Array<{ agentId: string; error: string }>): string {
   const head = freed ? `${label} · ${freed} freed` : label;
   if (failed.length === 0) {
@@ -768,5 +682,3 @@ function summarize(label: string, freed: string | null, failed: Array<{ agentId:
   }
   return `${head} · ${failed.length} failed: ${failed[0]?.error ?? ""}`;
 }
-
-

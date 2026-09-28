@@ -70,8 +70,9 @@ panel needs (sessions and terminal shells) share one cached sample for 800 ms, s
 scans the process table once instead of twice. Release and verification paths bypass that cache, so
 they always see the current process table.
 
-On a phone the panel switches to a stacked layout: every action button takes a full row, the badges
-and switches wrap instead of squeezing, and the header lines may use two lines.
+On a phone the panel keeps the same structure but the action buttons become a two-column grid with
+short labels (`Release (2)`, `Reopen (2)`, `Tabs (4)`, `Terminals (2)`, `Archive`), the workspace
+facts move into one wrapped line instead of pills, and the header lines may use two lines.
 
 ### Host line
 
@@ -84,20 +85,22 @@ line is omitted.
 
 ### Auto-release
 
-- **Switch** in the panel, on by default. The plugin watches the daemon's agent stream, so a session
+- **Always on, with no switch in the panel** (it is the point of the plugin). The plugin watches the daemon's agent stream, so a session
   is released shortly after it has been idle for `idleMinutes` (default 10). There is no polling loop
   behind that timing.
 - **Per-session timers**: one is armed when a session becomes idle (the plugin sees the status change
   on the agent stream) and cancelled as soon as the session starts a turn, needs your attention, or
   gets archived. Before releasing, the plugin re-reads the session and only touches sessions that are
-  still idle.
+  still idle. A single line at the bottom of the panel reports what it did last; intervals and the
+  empty-workspace switch live in `~/.paseo/agent-manager/auto-release.json` for anyone who wants to
+  change them.
 - **On load** (`onLoad`, default `allIdle`): when the plugin loads — a plugin reload, a daemon
   restart, or the first start after boot — every idle session is released once, because a session
   that went idle before the plugin started produces no status change to react to. `threshold` releases
   only those already past the idle age, `off` skips the pass.
 - **Safety sweep** every `intervalMinutes` (default 30): re-arms missing timers and releases anything
   the event path missed (daemon restart, dropped events, plugin reloaded mid-idle).
-- **Empty workspaces** (`removeEmptyWorkspaces`, default on): a workspace with no session records at
+- **Empty workspaces** (always on): a workspace with no session records at
   all is removed — archived ones on every sweep, and archiving an empty workspace removes it right
   away instead of keeping an empty record. The one exception is the last active workspace at a path:
   it is archived rather than deleted, because Paseo resolves directory workspaces by path and would
