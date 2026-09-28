@@ -89,6 +89,7 @@ interface ProjectRecord {
 const JOBS = new Map<string, JobState>();
 const ACTIVE_JOBS = new Map<string, string>();
 const JOB_HISTORY = 8;
+const ARCHIVE_BATCH_WINDOW_MS = 60000;
 const REGISTRY_PATH = "projects/workspaces.json";
 const DELETED_PATH = "agent-manager/deleted-workspaces.json";
 
@@ -494,6 +495,11 @@ async function runWorkspaceJob(job: JobState, input: StartJobInput): Promise<voi
   beginDaemonClientUse();
   try {
     const client = await getDaemonClient();
+    let batchArchivedAt: string | null = null;
+    if (!input.tabsOnly) {
+      const rows = await listWorkspaceRows().catch(() => []);
+      batchArchivedAt = rows.find((row) => row.workspaceId === input.workspaceId)?.archivedAt ?? null;
+    }
     if (!input.tabsOnly) {
       const recovery = await inspectRecovery(client, input.workspaceId);
       if (recovery && recovery.kind !== "recoverable" && recovery.kind !== "unavailable") {
@@ -513,12 +519,14 @@ async function runWorkspaceJob(job: JobState, input: StartJobInput): Promise<voi
     }
 
     const agents = await listWorkspaceAgents(input.paseo, input.workspaceId);
-    const targets = agents.filter((agent) => agent.archivedAt !== null && agent.parentAgentId === null);
+    const archivedRoots = agents.filter((agent) => agent.archivedAt !== null && agent.parentAgentId === null);
+    const targets = archivedRoots.filter((agent) => inArchiveBatch(agent.archivedAt, batchArchivedAt));
+    const keptClosed = archivedRoots.length - targets.length;
     job.total = targets.length;
     job.phase = "tabs";
     if (targets.length === 0) {
       job.message = job.restoredWorkspace
-        ? "Workspace restored. No closed tab needed reopening."
+        ? `Workspace restored. No tab was open when it was archived${keptClosed > 0 ? ` (${keptClosed} older closure kept closed)` : ""}.`
         : "No closed tab in this workspace.";
       job.phase = "done";
       return;
@@ -540,7 +548,7 @@ async function runWorkspaceJob(job: JobState, input: StartJobInput): Promise<voi
     }
 
     job.phase = "done";
-    job.message = summarize(job, input.release);
+    job.message = summarize(job, input.release, keptClosed);
   } catch (error) {
     job.phase = "failed";
     job.message = describe(error);
@@ -570,11 +578,27 @@ async function inspectRecovery(
   }
 }
 
-function summarize(job: JobState, release: boolean): string {
+function summarize(job: JobState, release: boolean, keptClosed: number): string {
   const head = job.restoredWorkspace ? "Workspace restored" : "Tabs reopened";
   const released = release ? ` · ${job.released} released` : "";
   const failed = job.failed.length > 0 ? ` · ${job.failed.length} failed` : "";
-  return `${head} · ${job.done - job.failed.length}/${job.total} tabs${released}${failed}`;
+  const older = keptClosed > 0 ? ` · ${keptClosed} older tab kept closed` : "";
+  return `${head} · ${job.done - job.failed.length}/${job.total} tabs${released}${failed}${older}`;
+}
+
+function inArchiveBatch(agentArchivedAt: string | null, workspaceArchivedAt: string | null): boolean {
+  if (agentArchivedAt === null) {
+    return false;
+  }
+  if (workspaceArchivedAt === null) {
+    return true;
+  }
+  const agentMs = Date.parse(agentArchivedAt);
+  const workspaceMs = Date.parse(workspaceArchivedAt);
+  if (!Number.isFinite(agentMs) || !Number.isFinite(workspaceMs)) {
+    return true;
+  }
+  return Math.abs(agentMs - workspaceMs) <= ARCHIVE_BATCH_WINDOW_MS;
 }
 
 async function readJsonList<T>(relativePath: string, key: string): Promise<T[]> {
