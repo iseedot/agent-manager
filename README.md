@@ -20,8 +20,12 @@ delete the whole workspace from one panel. Idle runtimes are released automatica
 - **Archive** stops everything a workspace owns and hides it from the app; **Activate** restores an
   archived workspace, reopens every tab, and releases each reopened session; **Delete** removes an
   archived workspace and its sessions for good.
-- **Auto-release** keeps memory in check on its own: every 10 minutes it releases every session that
-  has been idle for more than 10 minutes. It is on by default and can be switched off in the panel.
+- **Terminals** are managed next to sessions: each workspace row shows how many terminals it has,
+  what they hold in memory, and how many are running a command, and `Close terminals (N)` closes
+  them (with a confirmation when a command is running). Archiving a workspace kills its terminals
+  through the daemon, so there is nothing left behind.
+- **Auto-release** keeps memory in check on its own: a session is released shortly after it has been
+  idle for more than 10 minutes. It is on by default and can be switched off in the panel.
 
 ## Where the controls appear
 
@@ -82,6 +86,21 @@ cannot send a second tap to a different row.
 - State and intervals live in `~/.paseo/agent-manager/auto-release.json` per host. While auto-release
   is on, the plugin keeps its local connection open (it carries the agent stream); it closes again
   when the switch is turned off.
+
+### Terminals
+
+- Terminals belong to a workspace (`workspaceId`), so the panel shows them per workspace and closes
+  them per workspace. Memory is attributed by walking the terminal worker's shells in `/proc`: the
+  shell plus everything it started, which is why a terminal running a build or a dev server can show
+  hundreds of megabytes while an idle shell shows about 5 MB.
+- A terminal counts as **busy** when its shell has child processes, which is what Paseo 0.9.2 gives
+  us: it does not report terminal activity for plain shells (that needs shell integration, which the
+  default profiles do not install), so the plugin reads the process tree instead.
+- `Close terminals (N)` asks for confirmation only when at least one terminal is busy, because that
+  stops whatever it is running. Killing a terminal loses its scrollback; it is not a "release".
+- Auto-release does not close terminals on a timer: an idle shell is ~5 MB, and the terminals worth
+  reclaiming are the ones running something, which is exactly what should not be killed unattended.
+  Archiving a workspace (and therefore deleting one) closes its terminals through the daemon.
 
 ### What a workspace action can and cannot touch
 

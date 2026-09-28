@@ -133,7 +133,7 @@ async function waitForProcessesExit(pids: number[], timeoutMs = 3000): Promise<S
 function isRunning(pid: number): boolean {
   try {
     const raw = readFileSync(`/proc/${pid}/stat`, "latin1");
-    const close = raw.lastIndexOf(41);
+    const close = raw.lastIndexOf(")");
     if (close < 0) {
       return true;
     }

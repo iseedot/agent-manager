@@ -9,6 +9,8 @@ import {
   autoReleaseStateRpc,
   overviewRpc,
   releaseManyRpc,
+  terminalsCloseRpc,
+  terminalsRpc,
   workspaceArchiveRpc,
   workspaceCloseTabsRpc,
   workspaceDeleteRpc,
@@ -34,11 +36,14 @@ export function AgentManagerPanel({ theme, host, layout }: PluginSurfaceProps) {
   const archiveWorkspace = useRpc(workspaceArchiveRpc);
   const closeWorkspaceTabs = useRpc(workspaceCloseTabsRpc);
   const deleteWorkspace = useRpc(workspaceDeleteRpc);
+  const fetchTerminals = useRpc(terminalsRpc);
+  const closeWorkspaceTerminals = useRpc(terminalsCloseRpc);
   const readAutoRelease = useRpc(autoReleaseStateRpc);
   const writeAutoRelease = useRpc(autoReleaseSetRpc);
 
   const [pendingArchive, setPendingArchive] = useState<string | null>(null);
   const [pendingWorkspaceDelete, setPendingWorkspaceDelete] = useState<string | null>(null);
+  const [pendingTerminals, setPendingTerminals] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<string | null>(null);
   const [cooling, setCooling] = useState(false);
   const cooldownTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -49,6 +54,11 @@ export function AgentManagerPanel({ theme, host, layout }: PluginSurfaceProps) {
   const overview = useQuery({
     queryKey: ["agent-manager", "overview", host.id],
     queryFn: () => fetchOverview({}),
+  });
+
+  const terminals = useQuery({
+    queryKey: ["agent-manager", "terminals", host.id],
+    queryFn: () => fetchTerminals({}),
   });
 
   const autoRelease = useQuery({
@@ -147,6 +157,21 @@ export function AgentManagerPanel({ theme, host, layout }: PluginSurfaceProps) {
     onError: (error) => setFeedback(`Failed: ${message(error)}`),
   });
 
+  const closeTerminalsMutation = useMutation({
+    mutationFn: (workspaceId: string) => closeWorkspaceTerminals({ workspaceId }),
+    onSuccess: async (result) => {
+      setPendingTerminals(null);
+      setFeedback(
+        result.failed.length > 0
+          ? `Closed ${result.closed.length} terminal(s) · ${result.failed.length} failed`
+          : `Closed ${result.closed.length} terminal(s)`,
+      );
+      coolDown();
+      await refreshAll();
+    },
+    onError: (error) => setFeedback(`Failed: ${message(error)}`),
+  });
+
   const closeTabsMutation = useMutation({
     mutationFn: (workspaceId: string) => closeWorkspaceTabs({ workspaceId }),
     onSuccess: async (result) => {
@@ -174,6 +199,7 @@ export function AgentManagerPanel({ theme, host, layout }: PluginSurfaceProps) {
     toggleAutoRelease.isPending ||
     archiveWorkspaceMutation.isPending ||
     closeTabsMutation.isPending ||
+    closeTerminalsMutation.isPending ||
     deleteWorkspaceMutation.isPending ||
     jobs.busy ||
     cooling;
@@ -182,6 +208,22 @@ export function AgentManagerPanel({ theme, host, layout }: PluginSurfaceProps) {
   const activeWorkspaces = useMemo(() => workspaceRows.filter((row) => !row.archivedAt), [workspaceRows]);
   const archivedWorkspaces = useMemo(() => workspaceRows.filter((row) => row.archivedAt), [workspaceRows]);
   const sharedPaths = useMemo(() => pathGroups(workspaceRows), [workspaceRows]);
+  const terminalsByWorkspace = useMemo(() => {
+    const map = new Map<string, { count: number; busy: number; rssBytes: number }>();
+    for (const row of terminals.data?.workspaces ?? []) {
+      map.set(row.workspaceId, { count: row.count, busy: row.busy, rssBytes: row.rssBytes });
+    }
+    return map;
+  }, [terminals.data?.workspaces]);
+  const terminalTotals = useMemo(() => {
+    let count = 0;
+    let rssBytes = 0;
+    for (const row of terminals.data?.workspaces ?? []) {
+      count += row.count;
+      rssBytes += row.rssBytes;
+    }
+    return { count, rssBytes };
+  }, [terminals.data?.workspaces]);
   const autoState = autoRelease.data;
 
   const styles = useMemo(() => {
@@ -324,6 +366,18 @@ export function AgentManagerPanel({ theme, host, layout }: PluginSurfaceProps) {
               <Text style={styles.chipText}>+{alsoActive.length} active here</Text>
             </View>
           ) : null}
+          {(terminalsByWorkspace.get(row.workspaceId)?.count ?? 0) > 0 ? (
+            <View style={styles.chip}>
+              <Text style={styles.chipText}>
+                {terminalsByWorkspace.get(row.workspaceId)?.count} terminal
+                {(terminalsByWorkspace.get(row.workspaceId)?.count ?? 0) === 1 ? "" : "s"} ·{" "}
+                {formatBytes(terminalsByWorkspace.get(row.workspaceId)?.rssBytes ?? 0)}
+                {(terminalsByWorkspace.get(row.workspaceId)?.busy ?? 0) > 0
+                  ? ` · ${terminalsByWorkspace.get(row.workspaceId)?.busy} busy`
+                  : ""}
+              </Text>
+            </View>
+          ) : null}
         </View>
         <Text style={styles.wsMeta} numberOfLines={1}>
           {detail}
@@ -391,6 +445,27 @@ export function AgentManagerPanel({ theme, host, layout }: PluginSurfaceProps) {
             </Pressable>
             <Pressable
               accessibilityRole="button"
+              disabled={busy || (terminalsByWorkspace.get(row.workspaceId)?.count ?? 0) === 0}
+              style={[
+                styles.button,
+                busy || (terminalsByWorkspace.get(row.workspaceId)?.count ?? 0) === 0 ? styles.disabled : null,
+              ]}
+              onPress={() => {
+                const info = terminalsByWorkspace.get(row.workspaceId);
+                if ((info?.busy ?? 0) > 0) {
+                  setPendingTerminals(row.workspaceId);
+                  return;
+                }
+                setFeedback(null);
+                closeTerminalsMutation.mutate(row.workspaceId);
+              }}
+            >
+              <Text style={styles.buttonText}>
+                Close terminals ({terminalsByWorkspace.get(row.workspaceId)?.count ?? 0})
+              </Text>
+            </Pressable>
+            <Pressable
+              accessibilityRole="button"
               disabled={busy}
               style={[styles.button, busy ? styles.disabled : null]}
               onPress={() => {
@@ -435,6 +510,28 @@ export function AgentManagerPanel({ theme, host, layout }: PluginSurfaceProps) {
                 <Text style={styles.buttonTextOn}>Confirm archive</Text>
               </Pressable>
               <Pressable accessibilityRole="button" style={styles.button} onPress={() => setPendingArchive(null)}>
+                <Text style={styles.buttonText}>Cancel</Text>
+              </Pressable>
+            </View>
+          </View>
+        ) : null}
+
+        {pendingTerminals === row.workspaceId ? (
+          <View style={styles.confirm}>
+            <Text style={styles.confirmText}>
+              Close {terminalsByWorkspace.get(row.workspaceId)?.count ?? 0} terminal(s) in "{label}"?{" "}
+              {terminalsByWorkspace.get(row.workspaceId)?.busy ?? 0} are running a command — it stops.
+            </Text>
+            <View style={styles.actions}>
+              <Pressable
+                accessibilityRole="button"
+                disabled={busy}
+                style={[styles.button, styles.buttonDanger, busy ? styles.disabled : null]}
+                onPress={() => closeTerminalsMutation.mutate(row.workspaceId)}
+              >
+                <Text style={styles.buttonTextOn}>Confirm close</Text>
+              </Pressable>
+              <Pressable accessibilityRole="button" style={styles.button} onPress={() => setPendingTerminals(null)}>
                 <Text style={styles.buttonText}>Cancel</Text>
               </Pressable>
             </View>
@@ -531,6 +628,7 @@ export function AgentManagerPanel({ theme, host, layout }: PluginSurfaceProps) {
             ? ` · removed ${autoState.lastRemovedWorkspaces.length}`
             : ""}
           {autoState?.lastSkipped ? ` · skipped ${autoState.lastSkipped}` : ""}
+          {terminalTotals.count > 0 ? ` · ${terminalTotals.count} terminals ${formatBytes(terminalTotals.rssBytes)}` : ""}
           {autoState?.lastError ? ` · ${autoState.lastError}` : ""}
         </Text>
 

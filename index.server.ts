@@ -8,6 +8,8 @@ import {
   releaseManyRpc,
   workspaceActivateRpc,
   workspaceArchiveRpc,
+  terminalsCloseRpc,
+  terminalsRpc,
   workspaceCloseTabsRpc,
   workspaceDeleteRpc,
   workspacesRpc,
@@ -17,6 +19,7 @@ import { readAutoReleaseState, startAutoReleaseScheduler, updateAutoReleaseState
 import { disposeDaemonClient } from "./server/daemon-client";
 import { paseoHome } from "./server/daemon-mcp";
 import { buildOverview, type PaseoLike } from "./server/overview";
+import { closeTerminals, listAllTerminals, listWorkspaceTerminals, summarizeTerminals, type TerminalKiller, type TerminalLister } from "./server/terminals";
 import {
   archiveWorkspace,
   closeWorkspaceTabs,
@@ -33,6 +36,20 @@ export default function contribute(server: PluginServerContext) {
   server.handle(releaseManyRpc, async ({ agentIds, allowSignalFallback }) =>
     releaseAgents(agentIds, { allowSignalFallback: allowSignalFallback !== false }),
   );
+
+  server.handle(terminalsRpc, async (_input, { paseo }) => {
+    const api = paseo as unknown as TerminalLister;
+    const workspaceIds = (await listWorkspaceRows()).map((row) => row.workspaceId);
+    const summaries = await summarizeTerminals(() => listAllTerminals(api), workspaceIds);
+    return { workspaces: [...summaries.values()] };
+  });
+
+  server.handle(terminalsCloseRpc, async ({ workspaceId }, { paseo }) => {
+    const api = paseo as unknown as TerminalLister & TerminalKiller;
+    const terminals = await listWorkspaceTerminals(api, workspaceId);
+    const result = await closeTerminals(api, terminals.map((terminal) => terminal.id));
+    return { closed: result.closed, failed: result.failed };
+  });
 
   server.handle(workspacesRpc, async () => ({
     workspaces: await listWorkspaceRows(),

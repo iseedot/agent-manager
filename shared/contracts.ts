@@ -118,6 +118,29 @@ export const workspaceArchiveRpc = defineRpc({
   }),
 });
 
+export const terminalsSummarySchema = z.object({
+  workspaceId: z.string(),
+  count: z.number().int(),
+  shells: z.number().int(),
+  busy: z.number().int(),
+  rssBytes: z.number().int(),
+});
+
+export const terminalsRpc = defineRpc({
+  name: "agent-manager.terminals",
+  input: z.object({}),
+  output: z.object({ workspaces: z.array(terminalsSummarySchema) }),
+});
+
+export const terminalsCloseRpc = defineRpc({
+  name: "agent-manager.terminals-close",
+  input: z.object({ workspaceId: z.string() }),
+  output: z.object({
+    closed: z.array(z.string()),
+    failed: z.array(z.object({ terminalId: z.string(), error: z.string() })),
+  }),
+});
+
 export const workspaceDeleteRpc = defineRpc({
   name: "agent-manager.workspace-delete",
   input: z.object({ workspaceId: z.string() }),
