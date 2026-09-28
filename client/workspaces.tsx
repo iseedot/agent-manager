@@ -197,22 +197,6 @@ export function reopenCandidate(rows: readonly WorkspaceRow[], row: WorkspaceRow
   return candidates[0] ?? null;
 }
 
-export function pathGroups(rows: readonly WorkspaceRow[]): Array<{ key: string; cwd: string; rows: WorkspaceRow[] }> {
-  const groups = new Map<string, WorkspaceRow[]>();
-  for (const row of rows.filter((candidate) => candidate.archivedAt === null)) {
-    const key = `${row.projectId}|${normalizePath(row.cwd)}`;
-    const list = groups.get(key);
-    if (list) {
-      list.push(row);
-    } else {
-      groups.set(key, [row]);
-    }
-  }
-  return [...groups.entries()]
-    .filter(([, list]) => list.length > 1)
-    .map(([key, list]) => ({ key, cwd: list[0]?.cwd ?? "", rows: list }));
-}
-
 export function jobText(job: JobSnapshot): string {
   if (job.phase === "failed") {
     return job.message ?? "Failed";

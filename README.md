@@ -91,9 +91,8 @@ line is omitted.
 - **Per-session timers**: one is armed when a session becomes idle (the plugin sees the status change
   on the agent stream) and cancelled as soon as the session starts a turn, needs your attention, or
   gets archived. Before releasing, the plugin re-reads the session and only touches sessions that are
-  still idle. A single line at the bottom of the panel reports what it did last; intervals and the
-  empty-workspace switch live in `~/.paseo/agent-manager/auto-release.json` for anyone who wants to
-  change them.
+  still idle. The panel does not report it or offer a switch; intervals live in
+  `~/.paseo/agent-manager/auto-release.json` for anyone who wants to change them.
 - **On load** (`onLoad`, default `allIdle`): when the plugin loads — a plugin reload, a daemon
   restart, or the first start after boot — every idle session is released once, because a session
   that went idle before the plugin started produces no status change to react to. `threshold` releases
@@ -139,8 +138,8 @@ afterwards that no other workspace in the project changed state. Two cases are w
   reopens the oldest archived workspace at `/path`. That looks like a different workspace taking
   over. The confirmation names the workspace that would be reopened.
 - **Activate** restores only the workspace you picked. If another workspace for the same path is
-  already active — for example one Paseo reopened by itself — the job reports it instead of touching
-  it, so you can decide what to do with each one.
+  already active — for example one Paseo reopened by itself — the job leaves it alone; the row shows
+  `+N active here` so the situation is visible without a paragraph about it.
 
 **Delete** only applies to archived workspaces and needs a confirmation, because it hard-deletes
 every session record. The daemon has no request that removes a workspace record, so the plugin also

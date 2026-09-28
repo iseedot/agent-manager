@@ -5,7 +5,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ActivityIndicator, Pressable, ScrollView, Text, View } from "react-native";
 
 import {
-  autoReleaseStateRpc,
   overviewRpc,
   releaseManyRpc,
   systemRpc,
@@ -22,7 +21,6 @@ import {
   JobLine,
   activeAtPath,
   isLastActiveAtPath,
-  pathGroups,
   reopenCandidate,
   useWorkspaceJobs,
   useWorkspaces,
@@ -43,7 +41,6 @@ export function AgentManagerPanel({ theme, host, layout }: PluginSurfaceProps) {
   const fetchSystem = useRpc(systemRpc);
   const fetchTerminals = useRpc(terminalsRpc);
   const closeWorkspaceTerminals = useRpc(terminalsCloseRpc);
-  const readAutoRelease = useRpc(autoReleaseStateRpc);
 
   const [pendingArchive, setPendingArchive] = useState<string | null>(null);
   const [pendingWorkspaceDelete, setPendingWorkspaceDelete] = useState<string | null>(null);
@@ -70,12 +67,6 @@ export function AgentManagerPanel({ theme, host, layout }: PluginSurfaceProps) {
   const system = useQuery({
     queryKey: ["agent-manager", "system", host.id],
     queryFn: () => fetchSystem({}),
-    ...READ_ONCE,
-  });
-
-  const autoRelease = useQuery({
-    queryKey: ["agent-manager", "auto-release", host.id],
-    queryFn: () => readAutoRelease({}),
     ...READ_ONCE,
   });
 
@@ -204,8 +195,6 @@ export function AgentManagerPanel({ theme, host, layout }: PluginSurfaceProps) {
   const workspaceRows = workspaces.data?.workspaces ?? [];
   const activeWorkspaces = useMemo(() => workspaceRows.filter((row) => !row.archivedAt), [workspaceRows]);
   const archivedWorkspaces = useMemo(() => workspaceRows.filter((row) => row.archivedAt), [workspaceRows]);
-  const sharedPaths = useMemo(() => pathGroups(workspaceRows), [workspaceRows]);
-  const autoState = autoRelease.data;
 
   const terminalsByWorkspace = useMemo(() => {
     const map = new Map<string, { count: number; busy: number; rssBytes: number }>();
@@ -593,12 +582,6 @@ export function AgentManagerPanel({ theme, host, layout }: PluginSurfaceProps) {
         </Pressable>
       </View>
 
-      {sharedPaths.map((group) => (
-        <Text key={group.key} style={styles.warning}>
-          {group.rows.length} active workspaces share {group.cwd} — new sessions can land in either.
-        </Text>
-      ))}
-
       <ScrollView>
         <Text style={styles.sectionLabel}>ACTIVE · {activeWorkspaces.length}</Text>
         {activeWorkspaces.map((row) => renderWorkspace(row, false))}
@@ -614,22 +597,9 @@ export function AgentManagerPanel({ theme, host, layout }: PluginSurfaceProps) {
       </View>
 
       {overview.data?.warning ? <Text style={styles.warning}>{overview.data.warning}</Text> : null}
-      <Text style={styles.footer}>{autoReleaseLine(autoState)}</Text>
       {feedback ? <Text style={styles.footer}>{feedback}</Text> : null}
     </View>
   );
-}
-
-function autoReleaseLine(state: { enabled: boolean; idleMinutes: number; lastRunAt: string | null; lastReleased: unknown[] } | undefined): string {
-  if (!state) {
-    return "auto-release · reading state…";
-  }
-  if (!state.enabled) {
-    return "auto-release off (panel control removed; edit ~/.paseo/agent-manager/auto-release.json to change)";
-  }
-  const released = state.lastReleased.length > 0 ? ` · released ${state.lastReleased.length}` : "";
-  const last = state.lastRunAt ? ` · last ${formatTime(state.lastRunAt)}` : "";
-  return `auto-release on · idle > ${state.idleMinutes} min${last}${released}`;
 }
 
 function renderSystemLine(
