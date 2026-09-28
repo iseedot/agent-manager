@@ -9,11 +9,13 @@ import {
   autoReleaseStateRpc,
   overviewRpc,
   releaseManyRpc,
+  systemRpc,
   terminalsCloseRpc,
   terminalsRpc,
   workspaceArchiveRpc,
   workspaceCloseTabsRpc,
   workspaceDeleteRpc,
+  type SystemStats,
   type WorkspaceRow,
 } from "../shared/contracts";
 import {
@@ -36,6 +38,7 @@ export function AgentManagerPanel({ theme, host, layout }: PluginSurfaceProps) {
   const archiveWorkspace = useRpc(workspaceArchiveRpc);
   const closeWorkspaceTabs = useRpc(workspaceCloseTabsRpc);
   const deleteWorkspace = useRpc(workspaceDeleteRpc);
+  const fetchSystem = useRpc(systemRpc);
   const fetchTerminals = useRpc(terminalsRpc);
   const closeWorkspaceTerminals = useRpc(terminalsCloseRpc);
   const readAutoRelease = useRpc(autoReleaseStateRpc);
@@ -59,6 +62,11 @@ export function AgentManagerPanel({ theme, host, layout }: PluginSurfaceProps) {
   const terminals = useQuery({
     queryKey: ["agent-manager", "terminals", host.id],
     queryFn: () => fetchTerminals({}),
+  });
+
+  const system = useQuery({
+    queryKey: ["agent-manager", "system", host.id],
+    queryFn: () => fetchSystem({}),
   });
 
   const autoRelease = useQuery({
@@ -575,6 +583,7 @@ export function AgentManagerPanel({ theme, host, layout }: PluginSurfaceProps) {
         {host.label} · {overview.data?.totals.total ?? 0} sessions · {overview.data?.totals.holdingProcess ?? 0} holding a
         process · {formatBytes(overview.data?.totals.rssBytes ?? 0)}
       </Text>
+      {renderSystemLine(system.data, styles, theme)}
 
       <View style={styles.block}>
         <View style={styles.blockHead}>
@@ -674,6 +683,57 @@ export function AgentManagerPanel({ theme, host, layout }: PluginSurfaceProps) {
       {feedback ? <Text style={styles.footer}>{feedback}</Text> : null}
     </View>
   );
+}
+
+function renderSystemLine(
+  stats: SystemStats | undefined,
+  styles: Record<string, unknown>,
+  theme: { colors: { foregroundMuted: string; statusWarning: string } },
+) {
+  if (!stats) {
+    return null;
+  }
+  const parts: Array<{ text: string; warn: boolean }> = [];
+  if (stats.load1 !== null) {
+    parts.push({ text: `load ${stats.load1.toFixed(2)}`, warn: false });
+  }
+  if (stats.cpuPercent !== null) {
+    parts.push({ text: `cpu ${stats.cpuPercent.toFixed(0)}%`, warn: stats.cpuPercent >= 80 });
+  }
+  if (stats.memTotalBytes !== null && stats.memUsedBytes !== null) {
+    const percent = (stats.memUsedBytes / stats.memTotalBytes) * 100;
+    parts.push({
+      text: `mem ${formatMegabytes(stats.memUsedBytes)}/${formatMegabytes(stats.memTotalBytes)}`,
+      warn: percent >= 90,
+    });
+  }
+  if (stats.swapTotalBytes !== null && stats.swapTotalBytes > 0 && stats.swapUsedBytes !== null) {
+    const percent = (stats.swapUsedBytes / stats.swapTotalBytes) * 100;
+    parts.push({
+      text: `swap ${formatMegabytes(stats.swapUsedBytes)}/${formatMegabytes(stats.swapTotalBytes)}`,
+      warn: percent >= 50,
+    });
+  }
+  if (parts.length === 0) {
+    return null;
+  }
+  return (
+    <Text style={styles.subline as never} numberOfLines={1}>
+      {parts.map((part, index) => (
+        <Text key={part.text} style={part.warn ? { color: theme.colors.statusWarning } : undefined}>
+          {index === 0 ? part.text : ` · ${part.text}`}
+        </Text>
+      ))}
+    </Text>
+  );
+}
+
+function formatMegabytes(bytes: number): string {
+  const mb = bytes / (1024 * 1024);
+  if (mb >= 1024) {
+    return `${(mb / 1024).toFixed(1)}G`;
+  }
+  return `${Math.round(mb)}M`;
 }
 
 function summarize(label: string, freed: string | null, failed: Array<{ agentId: string; error: string }>): string {

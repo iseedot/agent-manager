@@ -126,6 +126,24 @@ export const terminalsSummarySchema = z.object({
   rssBytes: z.number().int(),
 });
 
+export const systemStatsSchema = z.object({
+  load1: z.number().nullable(),
+  load5: z.number().nullable(),
+  load15: z.number().nullable(),
+  cpuPercent: z.number().nullable(),
+  memTotalBytes: z.number().nullable(),
+  memUsedBytes: z.number().nullable(),
+  swapTotalBytes: z.number().nullable(),
+  swapUsedBytes: z.number().nullable(),
+  uptimeSeconds: z.number().nullable(),
+});
+
+export const systemRpc = defineRpc({
+  name: "agent-manager.system",
+  input: z.object({}),
+  output: systemStatsSchema,
+});
+
 export const terminalsRpc = defineRpc({
   name: "agent-manager.terminals",
   input: z.object({}),

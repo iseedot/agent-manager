@@ -8,6 +8,7 @@ import {
   releaseManyRpc,
   workspaceActivateRpc,
   workspaceArchiveRpc,
+  systemRpc,
   terminalsCloseRpc,
   terminalsRpc,
   workspaceCloseTabsRpc,
@@ -20,6 +21,7 @@ import { disposeDaemonClient } from "./server/daemon-client";
 import { installCrashGuards } from "./server/guard";
 import { paseoHome } from "./server/daemon-mcp";
 import { buildOverview, type PaseoLike } from "./server/overview";
+import { readSystemStats } from "./server/system";
 import { closeTerminals, listAllTerminals, listWorkspaceTerminals, summarizeTerminals, type TerminalKiller, type TerminalLister } from "./server/terminals";
 import {
   archiveWorkspace,
@@ -39,6 +41,8 @@ export default function contribute(server: PluginServerContext) {
   server.handle(releaseManyRpc, async ({ agentIds, allowSignalFallback }) =>
     releaseAgents(agentIds, { allowSignalFallback: allowSignalFallback !== false }),
   );
+
+  server.handle(systemRpc, async () => readSystemStats());
 
   server.handle(terminalsRpc, async (_input, { paseo }) => {
     const api = paseo as unknown as TerminalLister;

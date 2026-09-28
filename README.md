@@ -34,6 +34,8 @@ panel's unit is the workspace.
 
 ```
 14 workspaces · 1 active · 13 archived
+dev · 21 sessions · 3 holding a process · 320 MB
+load 0.42 · cpu 12% · mem 668M/961M · swap 238M/3.0G
 21 sessions · 1 holding a process · 150 MB
 ┌ Idle memory ───────────────────── [Auto-release on] [Check now] ┐
 │ Releases a session 10 min after its last activity, and every idle session when the plugin loads. │
@@ -58,6 +60,15 @@ While a workspace job runs the panel shows its progress (`Reopening tabs 2/7 · 
 outcome when it finishes. A job reopens one tab at a time, so the daemon never holds more than one
 reopened process at once. Action buttons lock for a moment after each action, so a re-sorted list
 cannot send a second tap to a different row.
+
+### Host line
+
+Under the workspace summary the panel shows the host itself, top style: load average, CPU busy
+across all cores, used/total memory, and used/total swap (only when the host has swap). CPU is a
+200 ms sample taken at most once every three seconds, so opening the panel costs one sample, and the
+memory number uses the same definition as `free` and `top` on a current procps (`total - MemAvailable`).
+Values turn yellow when memory passes 90 %, swap 50 %, or CPU 80 %. On a host without `/proc` the
+line is omitted.
 
 ### Auto-release
 
