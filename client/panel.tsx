@@ -271,21 +271,38 @@ export function AgentManagerPanel({ theme, host, layout }: PluginSurfaceProps) {
       headline: { color: palette.foreground, fontSize: compact ? 15 : 16, fontWeight: "600" as const },
       subline: { color: palette.foregroundMuted, fontSize: 12, marginTop: 3, lineHeight: 17 },
       toolbar: { flexDirection: "row" as const, flexWrap: "wrap" as const, gap: 8, marginTop: 14 },
+      sectionRow: {
+        flexDirection: "row" as const,
+        alignItems: "center" as const,
+        gap: 8,
+        marginTop: 22,
+        marginBottom: 8,
+      },
       sectionLabel: {
-        color: palette.foregroundMuted,
         fontSize: 11,
         fontWeight: "600" as const,
         letterSpacing: 0.6,
-        marginTop: 20,
-        marginBottom: 4,
       },
-      wsRow: {
-        borderTopWidth: 1,
-        borderTopColor: palette.border,
-        paddingVertical: compact ? 12 : 10,
+      sectionLabelActive: { color: palette.accent },
+      sectionLabelArchived: { color: palette.foregroundMuted },
+      sectionRule: { flex: 1, height: 1, backgroundColor: palette.border },
+      wsCard: {
+        position: "relative" as const,
         gap: 3,
+        padding: compact ? 12 : 10,
+        marginBottom: 10,
+        borderRadius: 10,
+        borderWidth: 1,
+        borderColor: palette.border,
+        backgroundColor: palette.surface1,
+        overflow: "hidden" as const,
       },
+      wsCardArchived: { backgroundColor: palette.surface0 },
+      wsStripe: { position: "absolute" as const, left: 0, top: 0, bottom: 0, width: 3 },
+      wsStripeActive: { backgroundColor: palette.accent },
+      wsStripeArchived: { backgroundColor: palette.foregroundMuted, opacity: 0.45 },
       wsName: { color: palette.foreground, fontSize: 14, fontWeight: "600" as const },
+      wsNameArchived: { color: palette.foregroundMuted },
       wsMeta: { color: palette.foregroundMuted, fontSize: 12, lineHeight: 17 },
       wsFacts: { color: palette.foreground, fontSize: 12, lineHeight: 17 },
       actions: { flexDirection: "row" as const, flexWrap: "wrap" as const, gap: 8, marginTop: 8 },
@@ -403,8 +420,9 @@ export function AgentManagerPanel({ theme, host, layout }: PluginSurfaceProps) {
       .join(" · ");
 
     return (
-      <View key={row.workspaceId} style={styles.wsRow}>
-        <Text style={styles.wsName} numberOfLines={1}>
+      <View key={row.workspaceId} style={[styles.wsCard, archived ? styles.wsCardArchived : null]}>
+        <View style={[styles.wsStripe, archived ? styles.wsStripeArchived : styles.wsStripeActive]} />
+        <Text style={[styles.wsName, archived ? styles.wsNameArchived : null]} numberOfLines={1}>
           {label}
         </Text>
         <Text style={styles.wsMeta} numberOfLines={1}>
@@ -803,11 +821,17 @@ export function AgentManagerPanel({ theme, host, layout }: PluginSurfaceProps) {
       </View>
 
       <ScrollView>
-        <Text style={styles.sectionLabel}>ACTIVE · {activeWorkspaces.length}</Text>
+        <View style={styles.sectionRow}>
+          <Text style={[styles.sectionLabel, styles.sectionLabelActive]}>ACTIVE · {activeWorkspaces.length}</Text>
+          <View style={styles.sectionRule} />
+        </View>
         {activeWorkspaces.map((row) => renderWorkspace(row, false))}
         {activeWorkspaces.length === 0 ? <Text style={styles.empty}>No active workspace.</Text> : null}
 
-        <Text style={styles.sectionLabel}>ARCHIVED · {archivedWorkspaces.length}</Text>
+        <View style={styles.sectionRow}>
+          <Text style={[styles.sectionLabel, styles.sectionLabelArchived]}>ARCHIVED · {archivedWorkspaces.length}</Text>
+          <View style={styles.sectionRule} />
+        </View>
         {archivedWorkspaces.map((row) => renderWorkspace(row, true))}
         {archivedWorkspaces.length === 0 ? <Text style={styles.empty}>No archived workspace.</Text> : null}
       </ScrollView>
