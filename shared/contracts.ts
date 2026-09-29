@@ -66,7 +66,6 @@ export const jobSchema = z.object({
   done: z.number().int(),
   current: z.string().nullable(),
   restoredWorkspace: z.boolean(),
-  released: z.number().int(),
   failed: z.array(failureSchema),
   message: z.string().nullable(),
   finished: z.boolean(),
@@ -98,6 +97,20 @@ export const workspacesRpc = defineRpc({
   output: z.object({
     workspaces: z.array(workspaceRowSchema),
     home: z.string(),
+    serverId: z.string().nullable(),
+  }),
+});
+
+export const workspaceRenameRpc = defineRpc({
+  name: "agent-manager.workspace-rename",
+  input: z.object({
+    workspaceId: z.string(),
+    title: z.string().nullable(),
+  }),
+  output: z.object({
+    ok: z.boolean(),
+    title: z.string().nullable(),
+    message: z.string(),
   }),
 });
 
@@ -186,7 +199,6 @@ export const workspaceActivateRpc = defineRpc({
   input: z.object({
     workspaceId: z.string(),
     workspaceName: z.string().optional(),
-    release: z.boolean().optional(),
     tabsOnly: z.boolean().optional(),
   }),
   output: z.object({ jobId: z.string() }),
@@ -217,48 +229,3 @@ export const jobStatusRpc = defineRpc({
   output: jobSchema,
 });
 
-export const projectRowSchema = z.object({
-  projectId: z.string(),
-  name: z.string().nullable(),
-  rootPath: z.string(),
-  archived: z.boolean(),
-  workspaceCount: z.number().int(),
-});
-
-export type ProjectRow = z.infer<typeof projectRowSchema>;
-
-export const moveStatusSchema = z.object({
-  phase: z.enum(["idle", "pending", "applied", "failed"]),
-  workspaceId: z.string().nullable(),
-  workspaceName: z.string().nullable(),
-  fromProjectId: z.string().nullable(),
-  toProjectId: z.string().nullable(),
-  toProjectName: z.string().nullable(),
-  moveDirectory: z.boolean(),
-  message: z.string(),
-  at: z.string().nullable(),
-});
-
-export type MoveStatus = z.infer<typeof moveStatusSchema>;
-
-export const projectsRpc = defineRpc({
-  name: "agent-manager.projects",
-  input: z.object({}),
-  output: z.object({ projects: z.array(projectRowSchema) }),
-});
-
-export const workspaceMoveRpc = defineRpc({
-  name: "agent-manager.workspace-move",
-  input: z.object({
-    workspaceId: z.string(),
-    projectId: z.string(),
-    moveDirectory: z.boolean(),
-  }),
-  output: z.object({ ok: z.boolean(), message: z.string(), move: moveStatusSchema }),
-});
-
-export const moveStatusRpc = defineRpc({
-  name: "agent-manager.move-status",
-  input: z.object({}),
-  output: moveStatusSchema,
-});

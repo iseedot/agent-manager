@@ -48,7 +48,7 @@ const DEFAULT_STATE: AutoReleaseState = {
   enabled: true,
   idleMinutes: 10,
   intervalMinutes: 30,
-  onLoad: "allIdle",
+  onLoad: "threshold",
   removeEmptyWorkspaces: true,
   lastRunAt: null,
   lastReleased: [],
@@ -60,6 +60,29 @@ const DEFAULT_STATE: AutoReleaseState = {
 
 const timers = new Map<string, ReturnType<typeof setTimeout>>();
 const lastStatus = new Map<string, string>();
+const loadedAt = new Map<string, number>();
+
+function noteLoaded(agentId: string): void {
+  loadedAt.set(agentId, Date.now());
+}
+
+function forgetLoaded(agentId: string): void {
+  loadedAt.delete(agentId);
+}
+
+function idleBase(agentId: string, lastActivity: number | null): number {
+  const loaded = loadedAt.get(agentId) ?? 0;
+  return Math.max(lastActivity ?? 0, loaded);
+}
+
+function blocksRelease(agent: { attentionReason?: unknown; pendingPermissions?: unknown } | null | undefined): boolean {
+  if (str(agent?.attentionReason) === "permission") {
+    return true;
+  }
+  const pending = agent?.pendingPermissions;
+  const pendingCount = Array.isArray(pending) ? pending.length : typeof pending === "number" ? pending : 0;
+  return pendingCount > 0;
+}
 
 let schedulerTimer: ReturnType<typeof setInterval> | null = null;
 let subscription: OwnedAgentSubscription | null = null;
@@ -190,12 +213,21 @@ function onAgentUpdate(message: unknown): void {
   if (payload.kind === "remove" || str(agent?.archivedAt) !== null) {
     cancelTimer(agentId);
     lastStatus.delete(agentId);
+    forgetLoaded(agentId);
     return;
   }
   const status = str(agent?.status) ?? "unknown";
   const previous = lastStatus.get(agentId);
   lastStatus.set(agentId, status);
-  if (status !== "idle" || agent?.requiresAttention === true) {
+  if (status === "closed" || status === "error") {
+    cancelTimer(agentId);
+    forgetLoaded(agentId);
+    return;
+  }
+  if (status === "idle" && (previous === undefined || previous === "closed" || previous === "error")) {
+    noteLoaded(agentId);
+  }
+  if (status !== "idle" || blocksRelease(agent)) {
     cancelTimer(agentId);
     return;
   }
@@ -213,7 +245,8 @@ function armFrom(agentId: string, agent: RawLiveAgent | undefined): void {
     }
     const recordPath = await findRecordPath(str(agent?.cwd), agentId);
     const lastActivity = await readLastActivity(recordPath, str(agent?.updatedAt));
-    const dueAt = (lastActivity ?? Date.now()) + state.idleMinutes * 60000;
+    const base = idleBase(agentId, lastActivity);
+    const dueAt = (base || Date.now()) + state.idleMinutes * 60000;
     armTimer(agentId, Math.max(1000, dueAt - Date.now()));
   })(), `arm ${agentId.slice(0, 7)}`);
 }
@@ -259,7 +292,7 @@ async function sweep(mode: AutoReleaseState["onLoad"]): Promise<void> {
         cancelTimer(agent.id);
         continue;
       }
-      if (agent.status === "running" || agent.requiresAttention) {
+      if (agent.status === "running" || blocksRelease(agent)) {
         cancelTimer(agent.id);
         if (agent.status !== "running") {
           skipped += 1;
@@ -267,7 +300,8 @@ async function sweep(mode: AutoReleaseState["onLoad"]): Promise<void> {
         continue;
       }
       const lastActivity = await resolveLastActivityAt(agent);
-      const dueAt = (lastActivity ?? now) + threshold;
+      const base = idleBase(agent.id, lastActivity);
+      const dueAt = (base || now) + threshold;
       if (mode === "allIdle" || dueAt <= now) {
         const result = await releaseIdleAgent(agent.id, agents);
         if (result === "released") {
@@ -316,11 +350,15 @@ async function releaseIdleAgent(agentId: string, known?: AgentRecord[]): Promise
     if (!current || current.status === "running" || current.status === "closed") {
       return "skipped";
     }
-    if (current.requiresAttention || current.archivedAt !== null) {
+    if (blocksRelease(current) || current.archivedAt !== null) {
       return "skipped";
     }
     await killAgentViaDaemonMcp(agentId);
-    return (await hasRuntime(agentId)) ? "skipped" : "released";
+    const stillRunning = await hasRuntime(agentId);
+    if (!stillRunning) {
+      forgetLoaded(agentId);
+    }
+    return stillRunning ? "skipped" : "released";
   } catch (error) {
     return describe(error);
   }
@@ -399,6 +437,8 @@ interface RawLiveAgent {
   status?: unknown;
   archivedAt?: unknown;
   requiresAttention?: unknown;
+  attentionReason?: unknown;
+  pendingPermissions?: unknown;
   updatedAt?: unknown;
   cwd?: unknown;
 }

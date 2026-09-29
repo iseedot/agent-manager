@@ -41,9 +41,35 @@ export interface DaemonSessionClient {
   }): Promise<{ entries?: unknown }>;
   observeAgents(options?: { filter?: { includeArchived?: boolean } }): Promise<OwnedAgentSubscription>;
   restoreWorkspace(workspaceId: string, requestId?: string): Promise<void>;
+  setWorkspaceTitle(
+    workspaceId: string,
+    title: string | null,
+    requestId?: string,
+  ): Promise<{ title: string | null }>;
   inspectWorkspaceRecovery(workspaceId: string, requestId?: string): Promise<WorkspaceRecoveryState>;
   refreshAgent(agentId: string, requestId?: string): Promise<unknown>;
   closeItems(input: { agentIds: string[]; terminalIds: string[] }): Promise<unknown>;
+  getDaemonStatus(options?: unknown): Promise<{ serverId?: unknown }>;
+}
+
+let cachedServerId: string | null = null;
+
+export async function resolveServerId(): Promise<string | null> {
+  if (cachedServerId) {
+    return cachedServerId;
+  }
+  try {
+    const client = await getDaemonClient();
+    const status = await client.getDaemonStatus();
+    const serverId = typeof status?.serverId === "string" ? status.serverId.trim() : "";
+    if (serverId) {
+      cachedServerId = serverId;
+      return serverId;
+    }
+  } catch {
+    return null;
+  }
+  return null;
 }
 
 interface DaemonClientConstructor {

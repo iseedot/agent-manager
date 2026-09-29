@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { listAllAgents, type AgentLister } from "./agents";
 import { deleteAgents } from "./actions";
 import { beginDaemonClientUse, endDaemonClientUse, getDaemonClient, type WorkspaceRecoveryState } from "./daemon-client";
-import { killAgentViaDaemonMcp, paseoHome } from "./daemon-mcp";
+import { paseoHome } from "./daemon-mcp";
 import type { PaseoLike } from "./overview";
 import {
   describe,
@@ -59,7 +59,6 @@ export interface JobState {
   done: number;
   current: string | null;
   restoredWorkspace: boolean;
-  released: number;
   failed: JobFailure[];
   message: string | null;
   startedAt: string;
@@ -91,7 +90,7 @@ const ACTIVE_JOBS = new Map<string, string>();
 const JOB_HISTORY = 8;
 const ARCHIVE_BATCH_WINDOW_MS = 60000;
 export const REGISTRY_PATH = "projects/workspaces.json";
-export const PROJECTS_PATH = "projects/projects.json";
+const PROJECTS_PATH = "projects/projects.json";
 const DELETED_PATH = "agent-manager/deleted-workspaces.json";
 
 interface DeletedState {
@@ -183,6 +182,34 @@ export interface ArchiveOutcome {
   touchedOthers: string[];
 }
 
+export interface RenameOutcome {
+  ok: boolean;
+  title: string | null;
+  message: string;
+}
+
+export async function renameWorkspace(workspaceId: string, title: string | null): Promise<RenameOutcome> {
+  const trimmed = title?.trim() ?? "";
+  const next = trimmed.length === 0 ? null : trimmed;
+  beginDaemonClientUse();
+  try {
+    const client = await getDaemonClient();
+    const result = await client.setWorkspaceTitle(workspaceId, next);
+    return {
+      ok: true,
+      title: result.title,
+      message:
+        result.title === null
+          ? "Workspace name reset to the directory default."
+          : `Workspace renamed to "${result.title}".`,
+    };
+  } catch (error) {
+    return { ok: false, title: null, message: describe(error) };
+  } finally {
+    endDaemonClientUse();
+  }
+}
+
 export async function archiveWorkspace(
   paseo: PaseoWorkspaceControl,
   workspaceId: string,
@@ -196,7 +223,9 @@ export async function archiveWorkspace(
   const reopenCandidate = isLastActive ? oldestArchived(pathRows, workspaceId) : null;
 
   const reopenLabel = reopenCandidate ? (reopenCandidate.name ?? pathBasename(target?.cwd ?? "")) : null;
-  if (isLastActive && options.confirmLastActive !== true) {
+  const before = await listWorkspaceAgents(paseo, workspaceId).catch(() => []);
+  const empty = before.length === 0;
+  if (isLastActive && !empty && options.confirmLastActive !== true) {
     return {
       ok: false,
       refused: true,
@@ -211,7 +240,6 @@ export async function archiveWorkspace(
     };
   }
 
-  const before = await listWorkspaceAgents(paseo, workspaceId).catch(() => []);
   const statesBefore = new Map(rows.map((row) => [row.workspaceId, row.archivedAt]));
   const result = await paseo.workspaces.archive(workspaceId);
   const archivedAt = result?.archivedAt ?? null;
@@ -234,13 +262,13 @@ export async function archiveWorkspace(
     .map((row) => row.workspaceId);
   const tabs = before.filter((agent) => agent.parentAgentId === null).length;
 
-  if (before.length === 0 && !isLastActive) {
+  if (empty) {
     const removal = await deleteWorkspace(paseo, workspaceId).catch(() => null);
     if (removal?.ok) {
       return {
         ok: true,
         refused: false,
-        message: "Empty workspace removed — nothing was archived",
+        message: "Empty workspace archived and removed — it has no session records",
         archivedAt,
         activeAtPath: activeAtPath.length,
         willReopen: reopenCandidate,
@@ -442,7 +470,6 @@ export interface StartJobInput {
   paseo: PaseoLike;
   workspaceId: string;
   workspaceName: string;
-  release: boolean;
   tabsOnly: boolean;
 }
 
@@ -464,7 +491,6 @@ export function startWorkspaceJob(input: StartJobInput): JobState {
     done: 0,
     current: null,
     restoredWorkspace: false,
-    released: 0,
     failed: [],
     message: input.tabsOnly ? "Collecting closed tabs…" : "Restoring workspace…",
     startedAt: new Date().toISOString(),
@@ -538,10 +564,6 @@ async function runWorkspaceJob(job: JobState, input: StartJobInput): Promise<voi
       job.current = target.title ?? target.id.slice(0, 7);
       try {
         await client.refreshAgent(target.id);
-        if (input.release) {
-          await killAgentViaDaemonMcp(target.id);
-          job.released += 1;
-        }
       } catch (error) {
         job.failed.push({ agentId: target.id, error: describe(error) });
       }
@@ -549,7 +571,7 @@ async function runWorkspaceJob(job: JobState, input: StartJobInput): Promise<voi
     }
 
     job.phase = "done";
-    job.message = summarize(job, input.release, keptClosed);
+    job.message = summarize(job, keptClosed);
   } catch (error) {
     job.phase = "failed";
     job.message = describe(error);
@@ -579,12 +601,11 @@ async function inspectRecovery(
   }
 }
 
-function summarize(job: JobState, release: boolean, keptClosed: number): string {
+function summarize(job: JobState, keptClosed: number): string {
   const head = job.restoredWorkspace ? "Workspace restored" : "Tabs reopened";
-  const released = release ? ` · ${job.released} released` : "";
   const failed = job.failed.length > 0 ? ` · ${job.failed.length} failed` : "";
   const older = keptClosed > 0 ? ` · ${keptClosed} older tab kept closed` : "";
-  return `${head} · ${job.done - job.failed.length}/${job.total} tabs${released}${failed}${older}`;
+  return `${head} · ${job.done - job.failed.length}/${job.total} tabs${failed}${older}`;
 }
 
 function inArchiveBatch(agentArchivedAt: string | null, workspaceArchivedAt: string | null): boolean {
@@ -602,7 +623,7 @@ function inArchiveBatch(agentArchivedAt: string | null, workspaceArchivedAt: str
   return Math.abs(agentMs - workspaceMs) <= ARCHIVE_BATCH_WINDOW_MS;
 }
 
-export async function readJsonList<T>(relativePath: string, key: string): Promise<T[]> {
+async function readJsonList<T>(relativePath: string, key: string): Promise<T[]> {
   try {
     const raw = await readFile(join(paseoHome(), relativePath), "utf8");
     const parsed = JSON.parse(raw) as unknown;

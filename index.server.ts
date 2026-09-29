@@ -4,26 +4,23 @@ import {
   autoReleaseSetRpc,
   autoReleaseStateRpc,
   jobStatusRpc,
-  moveStatusRpc,
   overviewRpc,
-  projectsRpc,
   releaseManyRpc,
-  workspaceActivateRpc,
-  workspaceArchiveRpc,
-  workspaceMoveRpc,
   systemRpc,
   terminalsCloseRpc,
   terminalsRpc,
+  workspaceActivateRpc,
+  workspaceArchiveRpc,
   workspaceCloseTabsRpc,
   workspaceDeleteRpc,
+  workspaceRenameRpc,
   workspacesRpc,
 } from "./shared/contracts";
 import { releaseAgents } from "./server/actions";
 import { readAutoReleaseState, startAutoReleaseScheduler, updateAutoReleaseState } from "./server/auto-release";
-import { disposeDaemonClient } from "./server/daemon-client";
+import { disposeDaemonClient, resolveServerId } from "./server/daemon-client";
 import { installCrashGuards } from "./server/guard";
 import { paseoHome } from "./server/daemon-mcp";
-import { moveWorkspace, listProjectRows, readMoveStatus } from "./server/projects";
 import { buildOverview, type PaseoLike } from "./server/overview";
 import { readSystemStats } from "./server/system";
 import { closeTerminals, listAllTerminals, summarizeTerminals, type TerminalKiller, type TerminalLister } from "./server/terminals";
@@ -33,6 +30,7 @@ import {
   deleteWorkspace,
   listWorkspaceRows,
   readJob,
+  renameWorkspace,
   startWorkspaceJob,
   type PaseoWorkspaceControl,
 } from "./server/workspaces";
@@ -68,7 +66,10 @@ export default function contribute(server: PluginServerContext) {
   server.handle(workspacesRpc, async () => ({
     workspaces: await listWorkspaceRows(),
     home: paseoHome(),
+    serverId: await resolveServerId(),
   }));
+
+  server.handle(workspaceRenameRpc, async ({ workspaceId, title }) => renameWorkspace(workspaceId, title));
 
   server.handle(workspaceArchiveRpc, async ({ workspaceId, confirmLastActive }, { paseo }) =>
     archiveWorkspace(paseo as unknown as PaseoWorkspaceControl, workspaceId, {
@@ -84,7 +85,7 @@ export default function contribute(server: PluginServerContext) {
     closeWorkspaceTabs(paseo as unknown as PaseoLike, workspaceId),
   );
 
-  server.handle(workspaceActivateRpc, async ({ workspaceId, workspaceName, release, tabsOnly }, { paseo }) => {
+  server.handle(workspaceActivateRpc, async ({ workspaceId, workspaceName, tabsOnly }, { paseo }) => {
     const name =
       workspaceName ??
       (await listWorkspaceRows()).find((row) => row.workspaceId === workspaceId)?.name ??
@@ -93,7 +94,6 @@ export default function contribute(server: PluginServerContext) {
       paseo: paseo as unknown as PaseoLike,
       workspaceId,
       workspaceName: name,
-      release: release !== false,
       tabsOnly: tabsOnly === true,
     });
     return { jobId: job.jobId };
@@ -110,14 +110,6 @@ export default function contribute(server: PluginServerContext) {
   server.handle(autoReleaseStateRpc, async () => readAutoReleaseState());
 
   server.handle(autoReleaseSetRpc, async (patch) => updateAutoReleaseState(patch));
-
-  server.handle(projectsRpc, async () => ({ projects: await listProjectRows() }));
-
-  server.handle(workspaceMoveRpc, async ({ workspaceId, projectId, moveDirectory }) =>
-    moveWorkspace({ workspaceId, projectId, moveDirectory }),
-  );
-
-  server.handle(moveStatusRpc, async () => readMoveStatus());
 
   const stopAutoRelease = startAutoReleaseScheduler();
 

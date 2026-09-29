@@ -2,12 +2,12 @@ import type { PluginSurfaceProps } from "@getpaseo/plugin/client";
 import { useRpc } from "@getpaseo/plugin/client";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ActivityIndicator, Pressable, ScrollView, Text, View } from "react-native";
+import { ActivityIndicator, Pressable, ScrollView, Text, TextInput, View } from "react-native";
 
 import {
-  moveStatusRpc,
+  autoReleaseSetRpc,
+  autoReleaseStateRpc,
   overviewRpc,
-  projectsRpc,
   releaseManyRpc,
   systemRpc,
   terminalsCloseRpc,
@@ -15,13 +15,13 @@ import {
   workspaceArchiveRpc,
   workspaceCloseTabsRpc,
   workspaceDeleteRpc,
-  workspaceMoveRpc,
-  type MoveStatus,
-  type ProjectRow,
+  workspaceRenameRpc,
+  type AutoReleaseSnapshot,
   type SystemStats,
   type WorkspaceRow,
 } from "../shared/contracts";
 import { formatBytes, formatMegabytes, formatTime, message } from "./format";
+import { buildTones } from "./palette";
 import {
   JobLine,
   activeAtPath,
@@ -44,19 +44,17 @@ export function AgentManagerPanel({ theme, host, layout }: PluginSurfaceProps) {
   const closeWorkspaceTabs = useRpc(workspaceCloseTabsRpc);
   const deleteWorkspace = useRpc(workspaceDeleteRpc);
   const fetchSystem = useRpc(systemRpc);
+  const fetchAutoRelease = useRpc(autoReleaseStateRpc);
+  const setAutoRelease = useRpc(autoReleaseSetRpc);
   const fetchTerminals = useRpc(terminalsRpc);
   const closeWorkspaceTerminals = useRpc(terminalsCloseRpc);
-  const fetchProjects = useRpc(projectsRpc);
-  const fetchMoveStatus = useRpc(moveStatusRpc);
-  const moveWorkspace = useRpc(workspaceMoveRpc);
+  const renameWorkspace = useRpc(workspaceRenameRpc);
 
   const [pendingArchive, setPendingArchive] = useState<string | null>(null);
   const [pendingWorkspaceDelete, setPendingWorkspaceDelete] = useState<string | null>(null);
   const [pendingTerminals, setPendingTerminals] = useState<string | null>(null);
-  const [pendingMove, setPendingMove] = useState<string | null>(null);
-  const [moveTarget, setMoveTarget] = useState<string | null>(null);
-  const [moveDirectory, setMoveDirectory] = useState(false);
-  const [moveWatch, setMoveWatch] = useState(false);
+  const [renaming, setRenaming] = useState<string | null>(null);
+  const [renameValue, setRenameValue] = useState("");
   const [feedback, setFeedback] = useState<string | null>(null);
   const [cooling, setCooling] = useState(false);
   const cooldownTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -82,34 +80,11 @@ export function AgentManagerPanel({ theme, host, layout }: PluginSurfaceProps) {
     ...READ_ONCE,
   });
 
-  const projects = useQuery({
-    queryKey: ["agent-manager", "projects", host.id],
-    queryFn: () => fetchProjects({}),
+  const autoRelease = useQuery({
+    queryKey: ["agent-manager", "auto-release", host.id],
+    queryFn: () => fetchAutoRelease({}),
     ...READ_ONCE,
   });
-
-  const moveStatus = useQuery({
-    queryKey: ["agent-manager", "move", host.id],
-    queryFn: () => fetchMoveStatus({}),
-    refetchInterval: moveWatch ? 2500 : false,
-    refetchOnWindowFocus: false,
-  });
-
-  useEffect(() => {
-    if (!moveWatch) {
-      return;
-    }
-    const timer = setTimeout(() => setMoveWatch(false), 120000);
-    return () => clearTimeout(timer);
-  }, [moveWatch]);
-
-  const movePhase = moveStatus.data?.phase ?? "idle";
-
-  useEffect(() => {
-    if (moveWatch && (movePhase === "applied" || movePhase === "failed")) {
-      setMoveWatch(false);
-    }
-  }, [moveWatch, movePhase]);
 
   const refreshAll = useCallback(async () => {
     await queryClient.invalidateQueries({ queryKey: ["agent-manager"] });
@@ -223,19 +198,29 @@ export function AgentManagerPanel({ theme, host, layout }: PluginSurfaceProps) {
     onError: (error) => setFeedback(`Failed: ${message(error)}`),
   });
 
-  const moveMutation = useMutation({
-    mutationFn: (input: { workspaceId: string; projectId: string; moveDirectory: boolean }) =>
-      moveWorkspace(input),
+  const autoReleaseMutation = useMutation({
+    mutationFn: (patch: {
+      enabled?: boolean;
+      idleMinutes?: number;
+      intervalMinutes?: number;
+      onLoad?: "allIdle" | "threshold" | "off";
+      removeEmptyWorkspaces?: boolean;
+      runNow?: boolean;
+    }) => setAutoRelease(patch),
+    onSuccess: async (next) => {
+      queryClient.setQueryData(["agent-manager", "auto-release", host.id], next);
+      setFeedback(`Auto-release: idle ${next.idleMinutes}m · on load ${next.onLoad} · ${next.enabled ? "on" : "off"}`);
+      coolDown();
+    },
+    onError: (error) => setFeedback(`Failed: ${message(error)}`),
+  });
+
+  const renameMutation = useMutation({
+    mutationFn: (input: { workspaceId: string; title: string }) => renameWorkspace(input),
     onSuccess: async (result) => {
-      if (!result.ok) {
-        setFeedback(`Failed: ${result.message}`);
-        return;
-      }
-      setPendingMove(null);
-      setMoveTarget(null);
-      setMoveDirectory(false);
-      setFeedback(result.message);
-      setMoveWatch(true);
+      setRenaming(null);
+      setFeedback(result.ok ? result.message : `Failed: ${result.message}`);
+      coolDown();
       await refreshAll();
     },
     onError: (error) => setFeedback(`Failed: ${message(error)}`),
@@ -248,7 +233,7 @@ export function AgentManagerPanel({ theme, host, layout }: PluginSurfaceProps) {
     closeTabsMutation.isPending ||
     closeTerminalsMutation.isPending ||
     deleteWorkspaceMutation.isPending ||
-    moveMutation.isPending ||
+    renameMutation.isPending ||
     jobs.busy ||
     cooling;
 
@@ -266,10 +251,17 @@ export function AgentManagerPanel({ theme, host, layout }: PluginSurfaceProps) {
 
   const styles = useMemo(() => {
     const palette = theme.colors;
+    const tones = buildTones({
+      surface0: palette.surface0,
+      accent: palette.accent,
+      statusSuccess: palette.statusSuccess,
+      statusWarning: palette.statusWarning,
+      statusDanger: palette.statusDanger,
+    });
     return {
       screen: { flex: 1, backgroundColor: palette.surface0, padding: compact ? 14 : 20 },
       headline: { color: palette.foreground, fontSize: compact ? 15 : 16, fontWeight: "600" as const },
-      subline: { color: palette.foregroundMuted, fontSize: 12, marginTop: 3, lineHeight: 17 },
+      subline: { color: palette.foregroundMuted, fontSize: 12, flexShrink: 1, lineHeight: 17 },
       toolbar: { flexDirection: "row" as const, flexWrap: "wrap" as const, gap: 8, marginTop: 14 },
       sectionRow: {
         flexDirection: "row" as const,
@@ -283,12 +275,12 @@ export function AgentManagerPanel({ theme, host, layout }: PluginSurfaceProps) {
         fontWeight: "600" as const,
         letterSpacing: 0.6,
       },
-      sectionLabelActive: { color: palette.accent },
+      sectionLabelActive: { color: tones.accent },
       sectionLabelArchived: { color: palette.foregroundMuted },
       sectionRule: { flex: 1, height: 1, backgroundColor: palette.border },
       wsCard: {
         position: "relative" as const,
-        gap: 3,
+        gap: 4,
         padding: compact ? 12 : 10,
         marginBottom: 10,
         borderRadius: 10,
@@ -299,12 +291,29 @@ export function AgentManagerPanel({ theme, host, layout }: PluginSurfaceProps) {
       },
       wsCardArchived: { backgroundColor: palette.surface0 },
       wsStripe: { position: "absolute" as const, left: 0, top: 0, bottom: 0, width: 3 },
-      wsStripeActive: { backgroundColor: palette.accent },
+      wsStripeActive: { backgroundColor: tones.accent },
       wsStripeArchived: { backgroundColor: palette.foregroundMuted, opacity: 0.45 },
       wsName: { color: palette.foreground, fontSize: 14, fontWeight: "600" as const },
+      wsFacts: { color: palette.foregroundMuted, fontSize: 12, lineHeight: 17 },
+      factAccent: { color: tones.accent, fontWeight: "600" as const },
+      factOk: { color: tones.ok },
+      factWarn: { color: tones.warn },
+      hero: {
+        borderRadius: 10,
+        borderWidth: 1,
+        borderColor: palette.border,
+        backgroundColor: palette.surface1,
+        padding: compact ? 10 : 12,
+        gap: 8,
+      },
+      heroTop: {
+        flexDirection: "row" as const,
+        alignItems: "baseline" as const,
+        justifyContent: "space-between" as const,
+        gap: 8,
+      },
       wsNameArchived: { color: palette.foregroundMuted },
       wsMeta: { color: palette.foregroundMuted, fontSize: 12, lineHeight: 17 },
-      wsFacts: { color: palette.foreground, fontSize: 12, lineHeight: 17 },
       actions: { flexDirection: "row" as const, flexWrap: "wrap" as const, gap: 8, marginTop: 8 },
       button: {
         minHeight: 34,
@@ -312,58 +321,109 @@ export function AgentManagerPanel({ theme, host, layout }: PluginSurfaceProps) {
         alignItems: "center" as const,
         paddingHorizontal: 12,
         borderRadius: 8,
-        backgroundColor: palette.surface2,
+        backgroundColor: "transparent",
         borderWidth: 1,
         borderColor: palette.border,
       },
-      buttonPrimary: { backgroundColor: palette.accent, borderColor: palette.accent },
-      buttonDanger: { backgroundColor: palette.statusDanger, borderColor: palette.statusDanger },
+      buttonPrimary: { backgroundColor: tones.accent, borderColor: tones.accent },
+      buttonDanger: { backgroundColor: tones.danger, borderColor: tones.danger },
       buttonHalf: { flexBasis: "48%" as const, flexGrow: 1 },
       buttonText: { color: palette.foreground, fontSize: 12 },
-      buttonTextOn: { color: palette.accentForeground, fontSize: 12 },
+      buttonTextOn: { color: tones.onAccent, fontSize: 12 },
       disabled: { opacity: 0.45 },
       confirm: {
         borderWidth: 1,
-        borderColor: palette.statusDanger,
-        borderRadius: 8,
+        borderColor: tones.danger,
+        borderRadius: 10,
+        backgroundColor: palette.surface2,
         padding: 10,
         gap: 8,
         marginTop: 8,
       },
       confirmText: { color: palette.foreground, fontSize: 12, lineHeight: 17 },
-      movePanel: {
+      autoPanel: {
         borderWidth: 1,
-        borderColor: palette.accent,
+        borderColor: palette.border,
+        borderRadius: 10,
+        backgroundColor: palette.surface1,
+        padding: compact ? 10 : 12,
+        gap: 10,
+        marginBottom: 14,
+      },
+      autoRow: {
+        flexDirection: compact ? ("column" as const) : ("row" as const),
+        alignItems: compact ? ("stretch" as const) : ("center" as const),
+        justifyContent: "space-between" as const,
+        gap: compact ? 6 : 12,
+      },
+      autoLabel: { color: palette.foreground, fontSize: 12, flexShrink: 1 },
+      autoDivider: { height: 1, backgroundColor: palette.border, opacity: 0.6 },
+      autoStatus: { color: palette.foregroundMuted, fontSize: 11, lineHeight: 16 },
+      autoStatusWarn: { color: tones.danger, fontSize: 11, lineHeight: 16 },
+      segment: {
+        flexDirection: "row" as const,
+        alignSelf: compact ? ("stretch" as const) : ("auto" as const),
+        borderRadius: 8,
+        borderWidth: 1,
+        borderColor: palette.border,
+        overflow: "hidden" as const,
+      },
+      segmentItem: {
+        flexGrow: 1,
+        minHeight: 30,
+        paddingHorizontal: compact ? 6 : 12,
+        justifyContent: "center" as const,
+        alignItems: "center" as const,
+        borderLeftWidth: 1,
+        borderLeftColor: palette.border,
+      },
+      segmentItemFirst: { borderLeftWidth: 0 },
+      segmentItemActive: { backgroundColor: tones.accent },
+      segmentText: { color: palette.foregroundMuted, fontSize: 12 },
+      segmentTextActive: { color: tones.onAccent, fontSize: 12, fontWeight: "600" as const },
+      chip: {
+        minHeight: 30,
+        paddingHorizontal: 12,
+        justifyContent: "center" as const,
+        alignItems: "center" as const,
+        borderRadius: 8,
+        borderWidth: 1,
+        borderColor: palette.border,
+        backgroundColor: palette.surface1,
+      },
+      chipOn: { backgroundColor: tones.accent, borderColor: tones.accent },
+      chipText: { color: palette.foreground, fontSize: 12 },
+      chipTextOn: { color: tones.onAccent, fontSize: 12, fontWeight: "600" as const },
+      renamePanel: {
+        borderWidth: 1,
+        borderColor: tones.accent,
         borderRadius: 8,
         padding: 10,
         gap: 8,
         marginTop: 8,
       },
-      moveTarget: {
+      renameInput: {
+        minHeight: 36,
+        borderRadius: 8,
         borderWidth: 1,
         borderColor: palette.border,
-        borderRadius: 8,
-        paddingHorizontal: 10,
-        paddingVertical: 8,
         backgroundColor: palette.surface2,
-        gap: 2,
+        color: palette.foreground,
+        paddingHorizontal: 10,
+        fontSize: 13,
       },
-      moveTargetActive: { borderColor: palette.accent, backgroundColor: palette.surface1 },
-      moveTargetName: { color: palette.foreground, fontSize: 13 },
-      moveTargetNameActive: { color: palette.accent, fontSize: 13, fontWeight: "600" as const },
-      moveTargetMeta: { color: palette.foregroundMuted, fontSize: 11 },
-      moveTargetPath: { color: palette.foregroundMuted, fontSize: 11 },
-      moveToggle: { paddingVertical: 2 },
-      warning: { color: palette.statusWarning, fontSize: 12, marginTop: 10, lineHeight: 17 },
+      warning: { color: tones.warn, fontSize: 12, marginTop: 10, lineHeight: 17 },
       empty: { color: palette.foregroundMuted, fontSize: 13, paddingVertical: 20 },
       footer: {
-        color: palette.foregroundMuted,
+        color: palette.foreground,
         fontSize: 11,
         lineHeight: 16,
         marginTop: 12,
-        paddingTop: 10,
-        borderTopWidth: 1,
-        borderTopColor: palette.border,
+        padding: 10,
+        borderRadius: 8,
+        borderWidth: 1,
+        borderColor: palette.border,
+        backgroundColor: palette.surface1,
       },
       jobRow: { marginTop: 10 },
     };
@@ -394,30 +454,31 @@ export function AgentManagerPanel({ theme, host, layout }: PluginSurfaceProps) {
       ? []
       : activeAtPath(workspaceRows, row).filter((entry) => entry.workspaceId !== row.workspaceId);
     const terminalInfo = terminalsByWorkspace.get(row.workspaceId);
-    const moveCandidates = (projects.data?.projects ?? []).filter(
-      (project) => project.projectId !== row.projectId && !project.archived,
-    );
-    const moving = pendingMove === row.workspaceId;
-    const target = moveCandidates.find((project) => project.projectId === moveTarget) ?? null;
-    const targetChangesDirectory =
-      target !== null && target.rootPath.length > 0 && target.rootPath !== row.cwd;
-    const runningSessions = (overview.data?.agents ?? []).filter((entry) => entry.status === "running").length;
-    const facts = [
-      stats.holding > 0 ? `${stats.holding} holding · ${formatBytes(stats.rssBytes)}` : null,
-      `${stats.total} sessions`,
-      stats.running > 0 ? `${stats.running} running` : null,
-      terminalInfo && terminalInfo.count > 0
-        ? `${terminalInfo.count} terminal${terminalInfo.count === 1 ? "" : "s"} ${formatBytes(terminalInfo.rssBytes)}${
-            terminalInfo.busy > 0 ? ` (${terminalInfo.busy} busy)` : ""
-          }`
-        : null,
-      row.kind === "directory" ? null : row.kind,
-      row.projectName ?? "project removed",
-      alsoActive.length > 0 ? `+${alsoActive.length} active here` : null,
-      archived && row.archivedAt ? `archived ${formatTime(row.archivedAt)}` : null,
-    ]
-      .filter(Boolean)
-      .join(" · ");
+    const isRenaming = renaming === row.workspaceId;
+    const facts: Array<{ text: string; tone: "quiet" | "accent" | "ok" | "warn" }> = [];
+    if (stats.holding > 0) {
+      facts.push({ text: `${stats.holding} holding · ${formatBytes(stats.rssBytes)}`, tone: "accent" });
+    }
+    facts.push({ text: `${stats.total} session${stats.total === 1 ? "" : "s"}`, tone: "quiet" });
+    if (stats.running > 0) {
+      facts.push({ text: `${stats.running} running`, tone: "ok" });
+    }
+    if (terminalInfo && terminalInfo.count > 0) {
+      facts.push({
+        text: `${terminalInfo.count} terminal${terminalInfo.count === 1 ? "" : "s"} · ${formatBytes(terminalInfo.rssBytes)}`,
+        tone: terminalInfo.busy > 0 ? "warn" : "quiet",
+      });
+    }
+    if (row.kind !== "directory") {
+      facts.push({ text: row.kind, tone: "quiet" });
+    }
+    facts.push({ text: row.projectName ?? "project removed", tone: "quiet" });
+    if (alsoActive.length > 0) {
+      facts.push({ text: `+${alsoActive.length} active here`, tone: "quiet" });
+    }
+    if (archived && row.archivedAt) {
+      facts.push({ text: `archived ${formatTime(row.archivedAt)}`, tone: "quiet" });
+    }
 
     return (
       <View key={row.workspaceId} style={[styles.wsCard, archived ? styles.wsCardArchived : null]}>
@@ -429,7 +490,11 @@ export function AgentManagerPanel({ theme, host, layout }: PluginSurfaceProps) {
           {row.cwd}
         </Text>
         <Text style={styles.wsFacts} numberOfLines={2}>
-          {facts}
+          {facts.map((fact, index) => (
+            <Text key={fact.text} style={factStyles(fact.tone, styles)}>
+              {index === 0 ? fact.text : ` · ${fact.text}`}
+            </Text>
+          ))}
         </Text>
 
         {archived ? (
@@ -445,7 +510,7 @@ export function AgentManagerPanel({ theme, host, layout }: PluginSurfaceProps) {
               ]}
               onPress={() => {
                 setFeedback(null);
-                jobs.activate({ workspaceId: row.workspaceId, workspaceName: label, release: true });
+                jobs.activate({ workspaceId: row.workspaceId, workspaceName: label });
               }}
             >
               <Text style={styles.buttonTextOn}>Activate</Text>
@@ -463,20 +528,16 @@ export function AgentManagerPanel({ theme, host, layout }: PluginSurfaceProps) {
             </Pressable>
             <Pressable
               accessibilityRole="button"
-              disabled={busy || moveCandidates.length === 0}
-              style={[
-                styles.button,
-                compact ? styles.buttonHalf : null,
-                busy || moveCandidates.length === 0 ? styles.disabled : null,
-              ]}
+              disabled={busy}
+              style={[styles.button, compact ? styles.buttonHalf : null, busy ? styles.disabled : null]}
               onPress={() => {
                 setFeedback(null);
-                setPendingMove(moving ? null : row.workspaceId);
-                setMoveTarget(null);
-                setMoveDirectory(false);
+                setPendingArchive(null);
+                setRenaming(isRenaming ? null : row.workspaceId);
+                setRenameValue(row.name ?? "");
               }}
             >
-              <Text style={styles.buttonText}>Move…</Text>
+              <Text style={styles.buttonText}>Rename…</Text>
             </Pressable>
           </View>
         ) : (
@@ -507,7 +568,7 @@ export function AgentManagerPanel({ theme, host, layout }: PluginSurfaceProps) {
               ]}
               onPress={() => {
                 setFeedback(null);
-                jobs.activate({ workspaceId: row.workspaceId, workspaceName: label, release: true, tabsOnly: true });
+                jobs.activate({ workspaceId: row.workspaceId, workspaceName: label, tabsOnly: true });
               }}
             >
               <Text style={styles.buttonText}>Reopen ({stats.archived})</Text>
@@ -551,6 +612,12 @@ export function AgentManagerPanel({ theme, host, layout }: PluginSurfaceProps) {
               disabled={busy}
               style={[styles.button, compact ? styles.buttonHalf : null, busy ? styles.disabled : null]}
               onPress={() => {
+                setFeedback(null);
+                setRenaming(null);
+                if (stats.total === 0) {
+                  archiveWorkspaceMutation.mutate({ workspaceId: row.workspaceId, confirmLastActive: true });
+                  return;
+                }
                 setPendingWorkspaceDelete(null);
                 setPendingArchive(row.workspaceId);
               }}
@@ -559,20 +626,16 @@ export function AgentManagerPanel({ theme, host, layout }: PluginSurfaceProps) {
             </Pressable>
             <Pressable
               accessibilityRole="button"
-              disabled={busy || moveCandidates.length === 0}
-              style={[
-                styles.button,
-                compact ? styles.buttonHalf : null,
-                busy || moveCandidates.length === 0 ? styles.disabled : null,
-              ]}
+              disabled={busy}
+              style={[styles.button, compact ? styles.buttonHalf : null, busy ? styles.disabled : null]}
               onPress={() => {
                 setFeedback(null);
-                setPendingMove(moving ? null : row.workspaceId);
-                setMoveTarget(null);
-                setMoveDirectory(false);
+                setPendingArchive(null);
+                setRenaming(isRenaming ? null : row.workspaceId);
+                setRenameValue(row.name ?? "");
               }}
             >
-              <Text style={styles.buttonText}>Move…</Text>
+              <Text style={styles.buttonText}>Rename…</Text>
             </Pressable>
           </View>
         )}
@@ -581,9 +644,7 @@ export function AgentManagerPanel({ theme, host, layout }: PluginSurfaceProps) {
           <View style={styles.confirm}>
             <Text style={styles.confirmText}>
               {stats.total === 0
-                ? lastActive
-                  ? `Archive "${label}"? No sessions, and it is the only active workspace at this path, so it stays.`
-                  : `Delete "${label}"? It has no sessions.`
+                ? `Archive "${label}"? It has no sessions, so Paseo removes the workspace record.`
                 : `Archive "${label}"? ${stats.total} session(s) stop now${
                     stats.running > 0 ? ` (${stats.running} running)` : ""
                   }.`}
@@ -594,9 +655,7 @@ export function AgentManagerPanel({ theme, host, layout }: PluginSurfaceProps) {
                 " here next time.
               </Text>
             ) : null}
-            {stats.total > 0 ? (
-              <Text style={styles.wsMeta}>Tabs closes them without archiving, which frees the same memory.</Text>
-            ) : null}
+            <Text style={styles.wsMeta}>Tabs closes them without archiving, which frees the same memory.</Text>
             <View style={styles.actions}>
               <Pressable
                 accessibilityRole="button"
@@ -683,98 +742,45 @@ export function AgentManagerPanel({ theme, host, layout }: PluginSurfaceProps) {
           </View>
         ) : null}
 
-        {moving ? (
-          <View style={styles.movePanel}>
-            <Text style={styles.confirmText}>
-              {moveCandidates.length === 0
-                ? "No other active project exists. Create it in Paseo first, then move again."
-                : `Move "${label}" out of ${row.projectName ?? row.projectId}:`}
+        {isRenaming ? (
+          <View style={styles.renamePanel}>
+            <TextInput
+              autoFocus
+              value={renameValue}
+              onChangeText={setRenameValue}
+              onSubmitEditing={() =>
+                renameMutation.mutate({ workspaceId: row.workspaceId, title: renameValue })
+              }
+              placeholder="Workspace name"
+              placeholderTextColor={theme.colors.foregroundMuted}
+              returnKeyType="done"
+              style={styles.renameInput}
+            />
+            <Text style={styles.wsMeta}>
+              Saved on the daemon, archived or not. Clear the field to fall back to the directory name.
             </Text>
-            {moveCandidates.map((project: ProjectRow) => (
+            <View style={styles.actions}>
               <Pressable
-                key={project.projectId}
                 accessibilityRole="button"
                 disabled={busy}
                 style={[
-                  styles.moveTarget,
-                  moveTarget === project.projectId ? styles.moveTargetActive : null,
+                  styles.button,
+                  styles.buttonPrimary,
+                  compact ? styles.buttonHalf : null,
                   busy ? styles.disabled : null,
                 ]}
-                onPress={() => {
-                  setMoveTarget(project.projectId);
-                  setMoveDirectory(project.rootPath.length > 0 && project.rootPath !== row.cwd);
-                }}
+                onPress={() => renameMutation.mutate({ workspaceId: row.workspaceId, title: renameValue })}
               >
-                <Text
-                  style={
-                    moveTarget === project.projectId ? styles.moveTargetNameActive : styles.moveTargetName
-                  }
-                  numberOfLines={1}
-                >
-                  {project.name ?? project.rootPath}
-                  <Text style={styles.moveTargetMeta}>{`  ${project.workspaceCount} workspace(s)`}</Text>
-                </Text>
-                <Text style={styles.moveTargetPath} numberOfLines={1}>
-                  {project.rootPath}
-                </Text>
+                <Text style={styles.buttonTextOn}>Save name</Text>
               </Pressable>
-            ))}
-            {target ? (
-              <>
-                {targetChangesDirectory ? (
-                  <Pressable
-                    accessibilityRole="button"
-                    disabled={busy}
-                    style={styles.moveToggle}
-                    onPress={() => setMoveDirectory((value) => !value)}
-                  >
-                    <Text style={styles.confirmText}>
-                      {`${moveDirectory ? "[x]" : "[ ]"} also set the working directory to ${target.rootPath}`}
-                    </Text>
-                  </Pressable>
-                ) : (
-                  <Text style={styles.wsMeta}>
-                    {target.rootPath === row.cwd
-                      ? "That project root is already this workspace directory."
-                      : "That project has no root directory, so the directory stays."}
-                  </Text>
-                )}
-                <Text style={styles.warning}>
-                  {`Paseo restarts to apply this. ${runningSessions} running session(s), ${stats.holding} holding process(es) and every terminal stop for about ten seconds. Session history is kept.`}
-                </Text>
-                <View style={styles.actions}>
-                  <Pressable
-                    accessibilityRole="button"
-                    disabled={busy}
-                    style={[
-                      styles.button,
-                      styles.buttonDanger,
-                      compact ? styles.buttonHalf : null,
-                      busy ? styles.disabled : null,
-                    ]}
-                    onPress={() =>
-                      moveMutation.mutate({
-                        workspaceId: row.workspaceId,
-                        projectId: target.projectId,
-                        moveDirectory,
-                      })
-                    }
-                  >
-                    <Text style={styles.buttonTextOn}>Confirm move</Text>
-                  </Pressable>
-                  <Pressable
-                    accessibilityRole="button"
-                    style={[styles.button, compact ? styles.buttonHalf : null]}
-                    onPress={() => {
-                      setPendingMove(null);
-                      setMoveTarget(null);
-                    }}
-                  >
-                    <Text style={styles.buttonText}>Cancel</Text>
-                  </Pressable>
-                </View>
-              </>
-            ) : null}
+              <Pressable
+                accessibilityRole="button"
+                style={[styles.button, compact ? styles.buttonHalf : null]}
+                onPress={() => setRenaming(null)}
+              >
+                <Text style={styles.buttonText}>Cancel</Text>
+              </Pressable>
+            </View>
           </View>
         ) : null}
       </View>
@@ -783,14 +789,27 @@ export function AgentManagerPanel({ theme, host, layout }: PluginSurfaceProps) {
 
   return (
     <View style={styles.screen}>
-      <Text style={styles.headline} numberOfLines={2}>
-        {workspaceRows.length} workspaces · {activeWorkspaces.length} active · {archivedWorkspaces.length} archived
-      </Text>
-      <Text style={styles.subline} numberOfLines={2}>
-        {host.label} · {overview.data?.totals.total ?? 0} sessions · {overview.data?.totals.holdingProcess ?? 0} holding ·{" "}
-        {formatBytes(overview.data?.totals.rssBytes ?? 0)}
-      </Text>
-      {renderSystemLine(system.data, styles, theme)}
+      <View style={styles.hero}>
+        <Text style={styles.headline} numberOfLines={1}>
+          {workspaceRows.length} workspace{workspaceRows.length === 1 ? "" : "s"} · {activeWorkspaces.length} active ·{" "}
+          {archivedWorkspaces.length} archived
+        </Text>
+        <Text style={styles.subline} numberOfLines={2}>
+          {host.label} · {overview.data?.totals.total ?? 0} sessions ·{" "}
+          <Text
+            style={(overview.data?.totals.holdingProcess ?? 0) > 0 ? styles.factAccent : undefined}
+          >
+            {overview.data?.totals.holdingProcess ?? 0} holding · {formatBytes(overview.data?.totals.rssBytes ?? 0)}
+          </Text>
+        </Text>
+        <Text style={styles.subline} numberOfLines={2}>
+          {systemParts(system.data).map((part, index) => (
+            <Text key={part.text} style={part.warn ? styles.factWarn : undefined}>
+              {index === 0 ? part.text : ` · ${part.text}`}
+            </Text>
+          ))}
+        </Text>
+      </View>
 
       <View style={styles.toolbar}>
         <Pressable
@@ -821,7 +840,9 @@ export function AgentManagerPanel({ theme, host, layout }: PluginSurfaceProps) {
       </View>
 
       <ScrollView>
+        {renderAutoRelease(autoRelease.data, autoReleaseMutation, styles, compact)}
         <View style={styles.sectionRow}>
+          <View style={[styles.dot, styles.dotAccent]} />
           <Text style={[styles.sectionLabel, styles.sectionLabelActive]}>ACTIVE · {activeWorkspaces.length}</Text>
           <View style={styles.sectionRule} />
         </View>
@@ -829,6 +850,7 @@ export function AgentManagerPanel({ theme, host, layout }: PluginSurfaceProps) {
         {activeWorkspaces.length === 0 ? <Text style={styles.empty}>No active workspace.</Text> : null}
 
         <View style={styles.sectionRow}>
+          <View style={[styles.dot, styles.dotMuted]} />
           <Text style={[styles.sectionLabel, styles.sectionLabelArchived]}>ARCHIVED · {archivedWorkspaces.length}</Text>
           <View style={styles.sectionRule} />
         </View>
@@ -842,34 +864,20 @@ export function AgentManagerPanel({ theme, host, layout }: PluginSurfaceProps) {
 
       {overview.data?.warning ? <Text style={styles.warning}>{overview.data.warning}</Text> : null}
       {feedback ? <Text style={styles.footer}>{feedback}</Text> : null}
-      {movePhase !== "idle" && moveStatus.data ? (
-        <Text style={styles.warning}>{`Move: ${moveText(moveStatus.data)}`}</Text>
-      ) : null}
     </View>
   );
 }
 
-function moveText(status: MoveStatus): string {
-  const from = status.workspaceName ?? status.workspaceId ?? "workspace";
-  const to = status.toProjectName ?? status.toProjectId ?? "project";
-  if (status.phase === "applied") {
-    return status.message.length > 0 ? status.message : `Moved ${from} to ${to}.`;
-  }
-  if (status.phase === "failed") {
-    return status.message.length > 0 ? status.message : `Move to ${to} failed.`;
-  }
-  return status.message.length > 0 ? status.message : `Moving ${from} to ${to}…`;
+interface SystemPart {
+  text: string;
+  warn: boolean;
 }
 
-function renderSystemLine(
-  stats: SystemStats | undefined,
-  styles: Record<string, unknown>,
-  theme: { colors: { foregroundMuted: string; statusWarning: string } },
-) {
+function systemParts(stats: SystemStats | undefined): SystemPart[] {
   if (!stats) {
-    return null;
+    return [];
   }
-  const parts: Array<{ text: string; warn: boolean }> = [];
+  const parts: SystemPart[] = [];
   if (stats.load1 !== null) {
     parts.push({ text: `load ${stats.load1.toFixed(2)}`, warn: false });
   }
@@ -877,31 +885,168 @@ function renderSystemLine(
     parts.push({ text: `cpu ${stats.cpuPercent.toFixed(0)}%`, warn: stats.cpuPercent >= 80 });
   }
   if (stats.memTotalBytes !== null && stats.memUsedBytes !== null) {
-    const percent = (stats.memUsedBytes / stats.memTotalBytes) * 100;
     parts.push({
       text: `mem ${formatMegabytes(stats.memUsedBytes)}/${formatMegabytes(stats.memTotalBytes)}`,
-      warn: percent >= 90,
+      warn: stats.memUsedBytes / stats.memTotalBytes >= 0.9,
     });
   }
   if (stats.swapTotalBytes !== null && stats.swapTotalBytes > 0 && stats.swapUsedBytes !== null) {
-    const percent = (stats.swapUsedBytes / stats.swapTotalBytes) * 100;
     parts.push({
       text: `swap ${formatMegabytes(stats.swapUsedBytes)}/${formatMegabytes(stats.swapTotalBytes)}`,
-      warn: percent >= 50,
+      warn: stats.swapUsedBytes / stats.swapTotalBytes >= 0.5,
     });
   }
-  if (parts.length === 0) {
+  return parts;
+}
+
+function factStyles(
+  tone: "quiet" | "accent" | "ok" | "warn",
+  styles: Record<string, any>,
+): Record<string, unknown> | undefined {
+  if (tone === "accent") return styles.factAccent;
+  if (tone === "ok") return styles.factOk;
+  if (tone === "warn") return styles.factWarn;
+  return undefined;
+}
+
+const IDLE_PRESETS = [5, 10, 15, 30, 60];
+const ON_LOAD_MODES: Array<{ id: AutoReleaseSnapshot["onLoad"]; label: string }> = [
+  { id: "threshold", label: "Respect timer" },
+  { id: "allIdle", label: "All idle" },
+  { id: "off", label: "Do nothing" },
+];
+
+function renderAutoRelease(
+  state: AutoReleaseSnapshot | undefined,
+  mutation: { mutate: (patch: Record<string, unknown>) => void; isPending: boolean },
+  styles: Record<string, any>,
+  compact: boolean,
+) {
+  if (!state) {
     return null;
   }
-  return (
-    <Text style={styles.subline as never} numberOfLines={2}>
-      {parts.map((part, index) => (
-        <Text key={part.text} style={part.warn ? { color: theme.colors.statusWarning } : undefined}>
-          {index === 0 ? part.text : ` · ${part.text}`}
-        </Text>
-      ))}
-    </Text>
+  const pending = mutation.isPending;
+  const set = (patch: Record<string, unknown>) => mutation.mutate(patch);
+
+  const segmented = (
+    key: string,
+    options: readonly { id: string; label: string }[],
+    value: string,
+    onSelect: (id: string) => void,
+  ) => (
+    <View key={key} style={styles.segment}>
+      {options.map((option, index) => {
+        const active = option.id === value;
+        return (
+          <Pressable
+            key={option.id}
+            accessibilityRole="button"
+            disabled={pending}
+            style={[
+              styles.segmentItem,
+              index === 0 ? styles.segmentItemFirst : null,
+              active ? styles.segmentItemActive : null,
+              pending ? styles.disabled : null,
+            ]}
+            onPress={() => onSelect(option.id)}
+          >
+            <Text style={active ? styles.segmentTextActive : styles.segmentText} numberOfLines={1}>
+              {option.label}
+            </Text>
+          </Pressable>
+        );
+      })}
+    </View>
   );
+
+  return (
+    <>
+      <View style={styles.sectionRow}>
+        <View
+          style={[
+            styles.dot,
+            state.lastError ? styles.dotWarn : state.enabled ? styles.dotOk : styles.dotMuted,
+          ]}
+        />
+        <Text style={[styles.sectionLabel, styles.sectionLabelActive]}>AUTO-RELEASE</Text>
+        <View style={styles.sectionRule} />
+        <Pressable
+          accessibilityRole="button"
+          disabled={pending}
+          style={[styles.chip, state.enabled ? styles.chipOn : null, pending ? styles.disabled : null]}
+          onPress={() => set({ enabled: !state.enabled })}
+        >
+          <Text style={state.enabled ? styles.chipTextOn : styles.chipText}>
+            {state.enabled ? "On" : "Off"}
+          </Text>
+        </Pressable>
+        <Pressable
+          accessibilityRole="button"
+          disabled={pending}
+          style={[styles.chip, pending ? styles.disabled : null]}
+          onPress={() => set({ runNow: true })}
+        >
+          <Text style={styles.chipText}>Run now</Text>
+        </Pressable>
+      </View>
+
+      <View style={styles.autoPanel}>
+        <View style={styles.autoRow}>
+          <Text style={styles.autoLabel}>Release idle after</Text>
+          {segmented(
+            "idle",
+            IDLE_PRESETS.map((minutes) => ({ id: `${minutes}`, label: `${minutes}m` })),
+            `${state.idleMinutes}`,
+            (id) => set({ idleMinutes: Number(id) }),
+          )}
+        </View>
+        <View style={styles.autoDivider} />
+        <View style={styles.autoRow}>
+          <Text style={styles.autoLabel}>After a reload</Text>
+          {segmented("load", ON_LOAD_MODES, state.onLoad, (id) => set({ onLoad: id }))}
+        </View>
+        <View style={styles.autoDivider} />
+        <View style={styles.autoRow}>
+          <Text style={styles.autoLabel}>Remove empty workspaces</Text>
+          {segmented(
+            "empty",
+            [
+              { id: "on", label: "On" },
+              { id: "off", label: "Off" },
+            ],
+            state.removeEmptyWorkspaces ? "on" : "off",
+            (id) => set({ removeEmptyWorkspaces: id === "on" }),
+          )}
+        </View>
+        <Text style={state.lastError ? styles.autoStatusWarn : styles.autoStatus} numberOfLines={2}>
+          {autoReleaseLine(state)}
+        </Text>
+      </View>
+    </>
+  );
+}
+
+function autoReleaseLine(state: AutoReleaseSnapshot): string {
+  const parts = [
+    state.lastRunAt ? `last sweep ${formatTime(state.lastRunAt)}` : "no sweep yet",
+    `${state.lastReleased.length} released`,
+    state.lastRemovedWorkspaces.length > 0 ? `${state.lastRemovedWorkspaces.length} empty workspace(s) removed` : null,
+    state.lastSkipped > 0 ? `${state.lastSkipped} waiting on you` : null,
+    state.nextRunAt ? `next ${formatCountdown(state.nextRunAt)}` : null,
+    state.lastError ? `error: ${state.lastError}` : null,
+  ].filter((part): part is string => Boolean(part));
+  return parts.join(" · ");
+}
+
+function formatCountdown(value: string): string {
+  const target = Date.parse(value);
+  if (!Number.isFinite(target)) {
+    return "—";
+  }
+  const minutes = Math.round((target - Date.now()) / 60000);
+  if (minutes <= 0) return "now";
+  if (minutes < 60) return `in ${minutes}m`;
+  return `in ${Math.round(minutes / 60)}h`;
 }
 
 function summarize(label: string, freed: string | null, failed: Array<{ agentId: string; error: string }>): string {

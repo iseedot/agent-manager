@@ -26,7 +26,6 @@ export interface WorkspaceStats {
 export interface ActivateInput {
   workspaceId: string;
   workspaceName?: string;
-  release: boolean;
   tabsOnly?: boolean;
 }
 

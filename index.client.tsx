@@ -1,10 +1,13 @@
 import type { PluginClientContext } from "@getpaseo/plugin/client";
 
 import { registerReleaseCommands } from "./client/commands";
+import { contributeNewAgentButtons } from "./client/new-agent-button";
+import { OpenAgentSurface } from "./client/open-agent-surface";
 import { AgentManagerPanel } from "./client/panel";
 
 export default function contribute(client: PluginClientContext) {
   client.addSurface("agent-manager", AgentManagerPanel);
+  client.addSurface("open-agent", OpenAgentSurface);
   client.addSidebarItem({
     id: "agent-manager",
     title: "Agent Manager",
@@ -12,7 +15,9 @@ export default function contribute(client: PluginClientContext) {
     surface: "agent-manager",
   });
   const unregisterCommands = registerReleaseCommands(client);
+  const removeNewAgentButtons = contributeNewAgentButtons(client);
   return () => {
+    removeNewAgentButtons();
     unregisterCommands();
   };
 }

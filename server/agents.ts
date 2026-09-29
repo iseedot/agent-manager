@@ -9,6 +9,8 @@ export interface AgentRecord {
   parentAgentId: string | null;
   updatedAt: string | null;
   requiresAttention: boolean;
+  attentionReason: string | null;
+  pendingPermissions: number;
   cwd: string | null;
 }
 
@@ -28,6 +30,8 @@ interface RawAgent {
   parentAgentId?: unknown;
   updatedAt?: unknown;
   requiresAttention?: unknown;
+  attentionReason?: unknown;
+  pendingPermissions?: unknown;
   cwd?: unknown;
 }
 
@@ -73,6 +77,12 @@ function toAgentRecord(raw: RawAgent | undefined): AgentRecord | null {
     parentAgentId: str(raw.parentAgentId),
     updatedAt: str(raw.updatedAt),
     requiresAttention: raw.requiresAttention === true,
+    attentionReason: str(raw.attentionReason),
+    pendingPermissions: Array.isArray(raw.pendingPermissions)
+      ? raw.pendingPermissions.length
+      : typeof raw.pendingPermissions === "number"
+        ? raw.pendingPermissions
+        : 0,
     cwd: str(raw.cwd),
   };
 }
