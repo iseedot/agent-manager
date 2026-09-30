@@ -12,21 +12,22 @@ host.lan · 27 records · 5 unarchived (4 no runtime) · 22 archived
 1 holding · 118 MB · load 0.42 · cpu 7% · mem 611M/961M · swap 155M/3.0G
 [● Settings ▶]  idle 10m · last sweep 20m ago · 2 released · next in 9m   [Refresh] [Release idle (1)]
 ┌──────────────────────────────┬──────────────────────────────────────────────┐
-│ ▎project-a          2        │ WORKSPACE · paseo                            │
-│ ▏workspace-name     5        │ /srv/project-a                               │
-│    main · 2 holding · 210 MB │ main · 2 holding · 210 MB · 5 unarchived      │
-│  ● session title             │ [Open in app] [Release idle (2)]             │
-│    132 MB · pid 7 · running  │ [Release running (1)] [Reopen archived (1)]  │
-│  ↳ ↳ sub-agent               │ [Close open tabs (5)] [Close terminals (2)]  │
-│  ○ no runtime session        │ [Archive workspace] [Rename workspace…]      │
-│ ▏old-workspace (archived)  0 │                                              │
-│ ▎No workspace          1     │                                              │
+│▶ ▎project-a         2        │ WORKSPACE · paseo                            │
+│▼ ▏workspace-name    5        │ /srv/project-a                               │
+│     main · 2 holding · 210 MB│ main · 2 holding · 210 MB · 5 unarchived      │
+│   ● session title            │ [Open in app] [Release idle (2)]             │
+│     132 MB · pid 7 · running │ [Release running (1)] [Reopen archived (1)]  │
+│   ● ↳ sub-agent               │ [Close open tabs (5)] [Close terminals (2)]  │
+│   ○ no runtime session       │ [Archive workspace] [Rename workspace…]      │
+│▼ ▏old-workspace (archived) 0 │                                              │
+│▶ ▎No workspace         1     │                                              │
 └──────────────────────────────┴──────────────────────────────────────────────┘
 ```
 
-Rows are flat — no indentation, so long titles keep the full width — and the level is read from
-the row itself: a project has a filled row with an accent stripe and a bold label, a workspace has a
-thin stripe, a session has its status dot. Every row carries one secondary line of live numbers.
+Rows are flat — nothing is indented, so long titles keep the full width. The expand arrow is a narrow
+full-height bar hugging the left edge, and the level is read from the row itself: a project has a filled
+row with an accent stripe and a bold label, a workspace has a thin stripe, a session has its status dot.
+Every row carries one secondary line of live numbers, aligned with its title.
 
 - One tree on the left (project → workspace → session), the actions for the selection on the right.
   Phones get list → detail with a `Back` button.

@@ -126,14 +126,10 @@ export interface TreeMetrics {
   chevron: number;
   gap: number;
   marker: number;
-  titleOffset: number;
 }
 
 export function treeMetrics(compact: boolean): TreeMetrics {
-  const chevron = compact ? 40 : 26;
-  const gap = 6;
-  const marker = 8;
-  return { chevron, gap, marker, titleOffset: chevron + gap + marker + gap };
+  return { chevron: compact ? 26 : 20, gap: 6, marker: 8 };
 }
 
 export function buildStyles(theme: ThemeLike, compact: boolean): { styles: StyleMap; tones: Tones } {
@@ -215,7 +211,8 @@ export function buildStyles(theme: ThemeLike, compact: boolean): { styles: Style
       position: "relative" as const,
       borderRadius: 8,
       paddingVertical: compact ? 10 : 7,
-      paddingHorizontal: 8,
+      paddingRight: 8,
+      paddingLeft: 4,
       gap: 2,
       overflow: "hidden" as const,
     },
@@ -242,15 +239,16 @@ export function buildStyles(theme: ThemeLike, compact: boolean): { styles: Style
     },
     treeStripeMuted: { backgroundColor: palette.foregroundMuted, opacity: 0.5 },
     treeRowInner: { flexDirection: "row" as const, alignItems: "center" as const, gap: 6 },
+    treeRowBody: { flexDirection: "row" as const, flex: 1, gap: 4 },
+    treeRowContent: { flex: 1, gap: 2, justifyContent: "center" as const },
     treeChevron: {
       width: tree.chevron,
-      height: tree.chevron,
       alignItems: "center" as const,
       justifyContent: "center" as const,
-      borderRadius: 8,
+      borderRadius: 6,
     },
     treeChevronTap: { backgroundColor: palette.surface1, borderWidth: 1, borderColor: palette.border },
-    treeChevronSpacer: { width: tree.chevron, height: tree.chevron },
+    treeChevronSpacer: { width: tree.chevron },
     treeChevronText: { color: palette.foregroundMuted, fontSize: compact ? 13 : 10 },
     treeDot: { width: 8, height: 8, borderRadius: 4 },
     dotOk: { backgroundColor: tones.ok },

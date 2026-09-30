@@ -36,7 +36,7 @@ export function TreePane({
   compact: boolean;
   emptyText: string;
 }) {
-  const { marker, titleOffset } = treeMetrics(compact);
+  const { marker } = treeMetrics(compact);
   return (
     <ScrollView style={styles.paneScroll} contentContainerStyle={styles.paneContent}>
       {rows.length === 0 ? <Text style={styles.empty}>{emptyText}</Text> : null}
@@ -61,12 +61,12 @@ export function TreePane({
             ) : row.kind === "workspace" ? (
               <View style={[styles.treeStripeWorkspace, row.archived ? styles.treeStripeMuted : null]} />
             ) : null}
-            <View style={styles.treeRowInner}>
+            <View style={styles.treeRowBody}>
               {row.expandable ? (
                 <Pressable
                   accessibilityRole="button"
                   accessibilityLabel={row.expanded ? "Collapse" : "Expand"}
-                  hitSlop={compact ? 12 : 6}
+                  hitSlop={compact ? 14 : 8}
                   onPress={() => onToggle(row)}
                   style={[styles.treeChevron, compact ? styles.treeChevronTap : null]}
                 >
@@ -75,38 +75,42 @@ export function TreePane({
               ) : (
                 <View style={styles.treeChevronSpacer} />
               )}
-              {row.kind === "agent" ? (
-                <View style={[styles.treeDot, statusDotStyle(row.status ?? "closed", styles)]} />
-              ) : (
-                <View style={{ width: marker, height: marker }} />
-              )}
-              <Text
-                style={[
-                  styles.treeLabel,
-                  row.kind === "workspace" ? styles.treeLabelWorkspace : null,
-                  row.kind === "agent" ? styles.treeLabelAgent : null,
-                  group ? styles.treeLabelProject : null,
-                  row.archived ? styles.treeLabelArchived : null,
-                ]}
-                numberOfLines={1}
-              >
-                {row.label}
-              </Text>
-              {row.count !== null ? (
-                <View style={styles.treeCountBadge}>
-                  <Text style={styles.treeCountText}>{row.count}</Text>
-                </View>
-              ) : null}
-            </View>
-            {row.facts.length > 0 ? (
-              <Text style={[styles.treeFacts, { paddingLeft: titleOffset }]} numberOfLines={2}>
-                {row.facts.map((fact, index) => (
-                  <Text key={`${row.key}-${fact.text}`} style={factStyle(fact.tone, styles)}>
-                    {index === 0 ? fact.text : ` · ${fact.text}`}
+              <View style={styles.treeRowContent}>
+                <View style={styles.treeRowInner}>
+                  {row.kind === "agent" ? (
+                    <View style={[styles.treeDot, statusDotStyle(row.status ?? "closed", styles)]} />
+                  ) : (
+                    <View style={{ width: marker, height: marker }} />
+                  )}
+                  <Text
+                    style={[
+                      styles.treeLabel,
+                      row.kind === "workspace" ? styles.treeLabelWorkspace : null,
+                      row.kind === "agent" ? styles.treeLabelAgent : null,
+                      group ? styles.treeLabelProject : null,
+                      row.archived ? styles.treeLabelArchived : null,
+                    ]}
+                    numberOfLines={1}
+                  >
+                    {row.label}
                   </Text>
-                ))}
-              </Text>
-            ) : null}
+                  {row.count !== null ? (
+                    <View style={styles.treeCountBadge}>
+                      <Text style={styles.treeCountText}>{row.count}</Text>
+                    </View>
+                  ) : null}
+                </View>
+                {row.facts.length > 0 ? (
+                  <Text style={styles.treeFacts} numberOfLines={2}>
+                    {row.facts.map((fact, index) => (
+                      <Text key={`${row.key}-${fact.text}`} style={factStyle(fact.tone, styles)}>
+                        {index === 0 ? fact.text : ` · ${fact.text}`}
+                      </Text>
+                    ))}
+                  </Text>
+                ) : null}
+              </View>
+            </View>
           </Pressable>
         );
       })}
