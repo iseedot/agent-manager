@@ -129,7 +129,7 @@ export interface TreeMetrics {
 }
 
 export function treeMetrics(compact: boolean): TreeMetrics {
-  return { chevron: compact ? 26 : 20, gap: 6, marker: 8 };
+  return { chevron: compact ? 18 : 14, gap: 6, marker: 8 };
 }
 
 export function buildStyles(theme: ThemeLike, compact: boolean): { styles: StyleMap; tones: Tones } {
@@ -210,10 +210,8 @@ export function buildStyles(theme: ThemeLike, compact: boolean): { styles: Style
     treeRow: {
       position: "relative" as const,
       borderRadius: 8,
-      paddingVertical: compact ? 10 : 7,
       paddingRight: 8,
       paddingLeft: 4,
-      gap: 2,
       overflow: "hidden" as const,
     },
     treeRowProject: {
@@ -240,7 +238,12 @@ export function buildStyles(theme: ThemeLike, compact: boolean): { styles: Style
     treeStripeMuted: { backgroundColor: palette.foregroundMuted, opacity: 0.5 },
     treeRowInner: { flexDirection: "row" as const, alignItems: "center" as const, gap: 6 },
     treeRowBody: { flexDirection: "row" as const, flex: 1, gap: 4 },
-    treeRowContent: { flex: 1, gap: 2, justifyContent: "center" as const },
+    treeRowContent: {
+      flex: 1,
+      gap: 2,
+      justifyContent: "center" as const,
+      paddingVertical: compact ? 10 : 7,
+    },
     treeChevron: {
       width: tree.chevron,
       alignItems: "center" as const,
