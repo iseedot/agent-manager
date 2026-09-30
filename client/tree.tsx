@@ -1,6 +1,6 @@
 import { Pressable, ScrollView, Text, View } from "react-native";
 
-import { factStyle, statusDotStyle, type FactTone, type StyleMap } from "./styles";
+import { factStyle, statusDotStyle, treeMetrics, type FactTone, type StyleMap } from "./styles";
 
 export type TreeKind = "project" | "workspace" | "agent" | "orphan";
 
@@ -10,7 +10,6 @@ export interface TreeRow {
   id: string;
   workspaceId: string | null;
   label: string;
-  sub: string | null;
   facts: Array<{ text: string; tone: FactTone }>;
   depth: number;
   expandable: boolean;
@@ -19,8 +18,6 @@ export interface TreeRow {
   status: string | null;
   count: number | null;
 }
-
-const GUIDE_INSET = 4;
 
 export function TreePane({
   rows,
@@ -39,7 +36,7 @@ export function TreePane({
   compact: boolean;
   emptyText: string;
 }) {
-  const indent = compact ? 22 : 16;
+  const { marker, titleOffset } = treeMetrics(compact);
   return (
     <ScrollView style={styles.paneScroll} contentContainerStyle={styles.paneContent}>
       {rows.length === 0 ? <Text style={styles.empty}>{emptyText}</Text> : null}
@@ -61,14 +58,10 @@ export function TreePane({
           >
             {group ? (
               <View style={[styles.treeStripe, row.archived ? styles.treeStripeMuted : styles.treeStripeProject]} />
+            ) : row.kind === "workspace" ? (
+              <View style={[styles.treeStripeWorkspace, row.archived ? styles.treeStripeMuted : null]} />
             ) : null}
-            {Array.from({ length: row.depth }).map((_, index) => (
-              <View
-                key={`guide-${index}`}
-                style={[styles.treeGuide, { left: 8 + index * indent + GUIDE_INSET }]}
-              />
-            ))}
-            <View style={[styles.treeRowInner, { paddingLeft: row.depth * indent }]}>
+            <View style={styles.treeRowInner}>
               {row.expandable ? (
                 <Pressable
                   accessibilityRole="button"
@@ -82,10 +75,10 @@ export function TreePane({
               ) : (
                 <View style={styles.treeChevronSpacer} />
               )}
-              {row.status ? (
-                <View style={[styles.treeDot, statusDotStyle(row.status, styles)]} />
+              {row.kind === "agent" ? (
+                <View style={[styles.treeDot, statusDotStyle(row.status ?? "closed", styles)]} />
               ) : (
-                <View style={styles.treeDot} />
+                <View style={{ width: marker, height: marker }} />
               )}
               <Text
                 style={[
@@ -106,17 +99,12 @@ export function TreePane({
               ) : null}
             </View>
             {row.facts.length > 0 ? (
-              <Text style={styles.treeFacts} numberOfLines={2}>
+              <Text style={[styles.treeFacts, { paddingLeft: titleOffset }]} numberOfLines={2}>
                 {row.facts.map((fact, index) => (
                   <Text key={`${row.key}-${fact.text}`} style={factStyle(fact.tone, styles)}>
-                    {index === 0 ? `   ${fact.text}` : ` · ${fact.text}`}
+                    {index === 0 ? fact.text : ` · ${fact.text}`}
                   </Text>
                 ))}
-              </Text>
-            ) : null}
-            {row.sub ? (
-              <Text style={styles.treeSub} numberOfLines={1}>
-                {`   ${row.sub}`}
               </Text>
             ) : null}
           </Pressable>

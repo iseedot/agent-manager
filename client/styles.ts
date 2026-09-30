@@ -122,6 +122,20 @@ export function buildTones(input: {
   };
 }
 
+export interface TreeMetrics {
+  chevron: number;
+  gap: number;
+  marker: number;
+  titleOffset: number;
+}
+
+export function treeMetrics(compact: boolean): TreeMetrics {
+  const chevron = compact ? 40 : 26;
+  const gap = 6;
+  const marker = 8;
+  return { chevron, gap, marker, titleOffset: chevron + gap + marker + gap };
+}
+
 export function buildStyles(theme: ThemeLike, compact: boolean): { styles: StyleMap; tones: Tones } {
   const palette = theme.colors;
   const tones = buildTones({
@@ -131,6 +145,7 @@ export function buildStyles(theme: ThemeLike, compact: boolean): { styles: Style
     statusWarning: palette.statusWarning,
     statusDanger: palette.statusDanger,
   });
+  const tree = treeMetrics(compact);
   const styles: StyleMap = {
     screen: { flex: 1, backgroundColor: palette.surface0, padding: compact ? 12 : 18 },
     headline: { color: palette.foreground, fontSize: compact ? 15 : 16, fontWeight: "600" as const },
@@ -215,25 +230,27 @@ export function buildStyles(theme: ThemeLike, compact: boolean): { styles: Style
     treeRowArchived: { opacity: 0.72 },
     treeStripe: { position: "absolute" as const, left: 0, top: 0, bottom: 0, width: 3 },
     treeStripeProject: { backgroundColor: tones.accent },
-    treeStripeMuted: { backgroundColor: palette.foregroundMuted, opacity: 0.5 },
-    treeGuide: {
+    treeStripeWorkspace: {
       position: "absolute" as const,
-      top: 0,
-      bottom: 0,
-      width: 1,
-      backgroundColor: palette.border,
-      opacity: 0.6,
+      left: 0,
+      top: 2,
+      bottom: 2,
+      width: 2,
+      borderRadius: 1,
+      backgroundColor: palette.foregroundMuted,
+      opacity: 0.55,
     },
+    treeStripeMuted: { backgroundColor: palette.foregroundMuted, opacity: 0.5 },
     treeRowInner: { flexDirection: "row" as const, alignItems: "center" as const, gap: 6 },
     treeChevron: {
-      width: compact ? 40 : 26,
-      height: compact ? 40 : 26,
+      width: tree.chevron,
+      height: tree.chevron,
       alignItems: "center" as const,
       justifyContent: "center" as const,
       borderRadius: 8,
     },
     treeChevronTap: { backgroundColor: palette.surface1, borderWidth: 1, borderColor: palette.border },
-    treeChevronSpacer: { width: compact ? 40 : 26, height: compact ? 40 : 26 },
+    treeChevronSpacer: { width: tree.chevron, height: tree.chevron },
     treeChevronText: { color: palette.foregroundMuted, fontSize: compact ? 13 : 10 },
     treeDot: { width: 8, height: 8, borderRadius: 4 },
     dotOk: { backgroundColor: tones.ok },
@@ -247,7 +264,6 @@ export function buildStyles(theme: ThemeLike, compact: boolean): { styles: Style
     treeLabelAgent: { fontSize: 12.5, fontWeight: "500" as const },
     treeLabelArchived: { color: palette.foregroundMuted, fontWeight: "500" as const },
     treeFacts: { color: palette.foregroundMuted, fontSize: 11, lineHeight: 15 },
-    treeSub: { color: palette.foregroundMuted, fontSize: 11, lineHeight: 15, opacity: 0.85 },
     treeCountBadge: {
       minWidth: 22,
       height: 18,

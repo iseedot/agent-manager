@@ -606,7 +606,6 @@ function buildRows(
       id: group.projectId,
       workspaceId: null,
       label: group.name,
-      sub: group.rootPath,
       facts: [
         {
           text: `${scoped.length - archivedAgents} unarchived${noRuntime > 0 ? ` (${noRuntime} no runtime)` : ""}`,
@@ -622,6 +621,7 @@ function buildRows(
             ]
           : []),
         ...(running > 0 ? [{ text: `${running} running`, tone: "ok" as FactTone }] : []),
+        ...(group.rootPath ? [{ text: group.rootPath, tone: "quiet" as FactTone }] : []),
       ],
       depth: 0,
       expandable: true,
@@ -678,7 +678,6 @@ function buildRows(
         id: workspace.workspaceId,
         workspaceId: workspace.workspaceId,
         label: workspaceLabel(workspace),
-        sub: null,
         facts,
         depth: 1,
         expandable: stats.open > 0,
@@ -720,7 +719,6 @@ function buildRows(
       id: "orphan",
       workspaceId: null,
       label: "No workspace",
-      sub: null,
       facts: [
         { text: `${orphans.length} session${orphans.length === 1 ? "" : "s"}`, tone: "quiet" },
         { text: "workspace record is gone", tone: "quiet" },
@@ -762,8 +760,9 @@ function agentRow(agent: AgentRow, depth: number): TreeRow {
       tone: "quiet",
     });
   }
-  if (agent.pid !== null) {
-    facts.push({ text: formatTime(agent.updatedAt), tone: "quiet" });
+  facts.push({ text: formatTime(agent.updatedAt), tone: "quiet" });
+  if (agent.provider) {
+    facts.push({ text: agent.provider, tone: "quiet" });
   }
   if (agent.archived) {
     facts.push({ text: "archived", tone: "quiet" });
@@ -774,7 +773,6 @@ function agentRow(agent: AgentRow, depth: number): TreeRow {
     id: agent.id,
     workspaceId: agent.workspaceId,
     label: agent.parentAgentId ? `↳ ${agentTitle(agent)}` : agentTitle(agent),
-    sub: [agent.provider, agent.model].filter(Boolean).join(" · ") || null,
     facts,
     depth,
     expandable: false,

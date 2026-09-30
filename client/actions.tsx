@@ -465,7 +465,7 @@ function describeGroup(selection: TreeRow, ctx: ActionsContext): SelectionView {
   return {
     kindLabel: orphan ? "SESSIONS · NO WORKSPACE" : "PROJECT",
     title: selection.label,
-    sub: project?.rootPath ?? selection.sub,
+    sub: project?.rootPath ?? null,
     facts,
     info: orphan
       ? []
