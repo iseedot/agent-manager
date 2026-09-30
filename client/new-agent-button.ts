@@ -5,10 +5,14 @@ import { workspacesRpc } from "../shared/contracts";
 import { message } from "./format";
 
 const PILL_ID = "new-agent-pill";
+const PANEL_PILL_ID = "agent-manager-pill";
+const PANEL_SURFACE_ID = "agent-manager";
+const PANEL_TITLE = "Agent Manager";
 const FOCUS_SURFACE_ID = "open-agent";
 const TITLE = "New agent";
 const PILL_LABEL = "\u200b";
 const ICON = "Plus";
+const PANEL_ICON = "Cpu";
 const AGENT_PAGE_LIMIT = 200;
 const REFRESH_THROTTLE_MS = 5000;
 const ERROR_TITLE_MS = 8000;
@@ -40,21 +44,29 @@ export function consumeNewAgentRequest(): { workspaceId: string; paseo: Paseo } 
   return request;
 }
 
-export function contributeNewAgentButtons(client: PluginClientContext): () => void {
-  const pills = new Map<string, PluginButtonRegistration>();
+export function contributeComposerPills(client: PluginClientContext): () => void {
+  const pills = new Map<string, PluginButtonRegistration[]>();
   const busy = new Set<string>();
   let released = false;
   let lastListedAt = 0;
 
   const flash = (title: string): void => {
-    for (const registration of pills.values()) {
-      registration.update({ title });
+    for (const registrations of pills.values()) {
+      registrations[0]?.update({ title });
     }
     setTimeout(() => {
-      for (const registration of pills.values()) {
-        registration.update({ title: TITLE });
+      for (const registrations of pills.values()) {
+        registrations[0]?.update({ title: TITLE });
       }
     }, ERROR_TITLE_MS);
+  };
+
+  const openPanel = (): void => {
+    try {
+      client.openSurface(PANEL_SURFACE_ID);
+    } catch (error) {
+      fail("open the panel", error);
+    }
   };
 
   const fail = (what: string, error: unknown): void => {
@@ -79,11 +91,24 @@ export function contributeNewAgentButtons(client: PluginClientContext): () => vo
         behavior: { kind: "action" as const, onPress: () => void press(workspaceId) },
       },
     });
-    pills.set(agentId, registration);
+    const panel = client.addComposerPill({
+      id: PANEL_PILL_ID,
+      workspaceId,
+      agentId,
+      button: {
+        title: PANEL_TITLE,
+        label: PILL_LABEL,
+        icon: PANEL_ICON,
+        behavior: { kind: "action" as const, onPress: openPanel },
+      },
+    });
+    pills.set(agentId, [registration, panel]);
   };
 
   const drop = (agentId: string): void => {
-    pills.get(agentId)?.remove();
+    for (const registration of pills.get(agentId) ?? []) {
+      registration.remove();
+    }
     pills.delete(agentId);
   };
 

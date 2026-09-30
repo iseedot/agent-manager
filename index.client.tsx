@@ -1,7 +1,7 @@
 import type { PluginClientContext } from "@getpaseo/plugin/client";
 
 import { registerReleaseCommands } from "./client/commands";
-import { contributeNewAgentButtons } from "./client/new-agent-button";
+import { contributeComposerPills } from "./client/new-agent-button";
 import { OpenAgentSurface } from "./client/open-agent-surface";
 import { AgentManagerPanel } from "./client/panel";
 
@@ -15,9 +15,9 @@ export default function contribute(client: PluginClientContext) {
     surface: "agent-manager",
   });
   const unregisterCommands = registerReleaseCommands(client);
-  const removeNewAgentButtons = contributeNewAgentButtons(client);
+  const removeComposerPills = contributeComposerPills(client);
   return () => {
-    removeNewAgentButtons();
+    removeComposerPills();
     unregisterCommands();
   };
 }

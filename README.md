@@ -89,6 +89,10 @@ hosts have no keyboard layer, so it opens the same draft through Paseo's own `pa
 (`?open=draft:…`) — the tab appears instantly and the session is created when the first message is sent.
 If the host cannot open that link either, it creates the session through the daemon and jumps to it.
 
+**Open the panel** — a second pill on the composer (the CPU icon) jumps straight to the Agent Manager
+panel from any session, which is the shortest way in on a phone where the sidebar is a drawer. The same
+thing is in ⌘K as `Open Agent Manager`.
+
 **⌘K** — `Release other sessions` releases everything in the focused workspace except the current one.
 
 ## Auto-release
