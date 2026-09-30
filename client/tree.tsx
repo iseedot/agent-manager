@@ -57,6 +57,7 @@ export function TreePane({
       {rows.map((row) => {
         const selected = row.key === selectedKey;
         const group = row.kind === "project" || row.kind === "orphan";
+        const spacing = group ? styles.swipeWrapProject : null;
         const rowNode = (
           <Pressable
             key={row.key}
@@ -125,7 +126,11 @@ export function TreePane({
           </Pressable>
         );
         if (!swipe?.enabled) {
-          return <View key={row.key}>{rowNode}</View>;
+          return (
+            <View key={row.key} style={spacing}>
+              {rowNode}
+            </View>
+          );
         }
         return (
           <SwipeRow
@@ -137,6 +142,7 @@ export function TreePane({
             onOpenChange={(open) => swipe.setOpenKey(open ? row.key : null)}
             onActiveChange={setSwiping}
             styles={styles}
+            wrapStyle={spacing}
           >
             {rowNode}
           </SwipeRow>

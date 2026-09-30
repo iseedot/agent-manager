@@ -2,7 +2,12 @@ import type { ReactNode } from "react";
 import { useEffect, useMemo, useRef } from "react";
 import { Animated, PanResponder, Pressable, Text, View } from "react-native";
 
+import type { ComponentProps } from "react";
+import type { View as RNView } from "react-native";
+
 import type { StyleMap } from "./styles";
+
+type ViewStyleProp = ComponentProps<typeof RNView>["style"];
 
 export interface SwipeAction {
   id: string;
@@ -24,6 +29,7 @@ export function SwipeRow({
   onOpenChange,
   onActiveChange,
   styles,
+  wrapStyle,
   children,
 }: {
   enabled: boolean;
@@ -33,6 +39,7 @@ export function SwipeRow({
   onOpenChange: (open: boolean) => void;
   onActiveChange?: (active: boolean) => void;
   styles: StyleMap;
+  wrapStyle?: ViewStyleProp;
   children: ReactNode;
 }) {
   const width = actions.length * actionWidth;
@@ -77,37 +84,43 @@ export function SwipeRow({
   );
 
   if (!enabled || actions.length === 0) {
-    return <>{children}</>;
+    return <View style={wrapStyle}>{children}</View>;
   }
 
   return (
-    <View style={styles.swipeWrap}>
-      <View style={[styles.swipeActions, { width }]}>
-        {actions.map((action) => (
-          <Pressable
-            key={action.id}
-            accessibilityRole="button"
-            disabled={action.disabled === true}
-            style={[
-              styles.swipeAction,
-              { width: actionWidth },
-              action.tone === "primary" ? styles.swipeActionPrimary : null,
-              action.disabled === true ? styles.swipeActionDisabled : null,
-            ]}
-            onPress={() => {
-              onOpenChange(false);
-              action.run();
-            }}
-          >
-            <Text style={action.tone === "default" ? styles.swipeActionText : styles.swipeActionTextOn}>
-              {action.label}
-            </Text>
-          </Pressable>
-        ))}
+    <View style={wrapStyle}>
+      <View style={styles.swipeTrack}>
+        <View style={[styles.swipeStrip, { width }]}>
+          {actions.map((action, index) => (
+            <Pressable
+              key={action.id}
+              accessibilityRole="button"
+              disabled={action.disabled === true}
+              style={[
+                styles.swipeAction,
+                { width: actionWidth },
+                index === 0 ? styles.swipeActionFirst : null,
+                action.tone === "primary" ? styles.swipeActionPrimary : null,
+                action.disabled === true ? styles.swipeActionDisabled : null,
+              ]}
+              onPress={() => {
+                onOpenChange(false);
+                action.run();
+              }}
+            >
+              <Text
+                style={action.tone === "default" ? styles.swipeActionText : styles.swipeActionTextOn}
+                numberOfLines={2}
+              >
+                {action.label}
+              </Text>
+            </Pressable>
+          ))}
+        </View>
+        <Animated.View {...responder.panHandlers} style={{ transform: [{ translateX }] }}>
+          {children}
+        </Animated.View>
       </View>
-      <Animated.View {...responder.panHandlers} style={{ transform: [{ translateX }] }}>
-        {children}
-      </Animated.View>
     </View>
   );
 }

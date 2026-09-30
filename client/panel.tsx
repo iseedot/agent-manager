@@ -53,6 +53,7 @@ export function AgentManagerPanel({ theme, host, layout, navigation }: PluginSur
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [scope, setScope] = useState<"unarchived" | "all">("unarchived");
   const [openSwipe, setOpenSwipe] = useState<string | null>(null);
+
   const [feedback, setFeedback] = useState<string | null>(null);
   const [cooling, setCooling] = useState(false);
   const cooldownTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -347,28 +348,24 @@ export function AgentManagerPanel({ theme, host, layout, navigation }: PluginSur
         if (!agent) {
           return [];
         }
-        const actions: SwipeAction[] = [
-          {
-            id: "open",
-            label: "Open",
-            tone: "primary",
-            disabled: !ctx.canOpenAgent,
-            run: () => ctx.openAgent(agent.id),
-          },
-          {
-            id: "release",
-            label: "Release",
-            tone: "default",
-            disabled: agent.pid === null,
-            run: () => ctx.releaseAgents([agent.id]),
-          },
-        ];
-        actions.push(
-          agent.archived
-            ? { id: "restore", label: "Restore", tone: "default", run: () => ctx.restoreAgent(agent.id) }
-            : { id: "archive", label: "Archive", tone: "default", run: () => ctx.archiveAgents([agent.id]) },
-        );
-        return actions;
+        const secondary: SwipeAction = agent.archived
+          ? { id: "restore", label: "Restore", tone: "default", run: () => ctx.restoreAgent(agent.id) }
+          : { id: "archive", label: "Archive", tone: "default", run: () => ctx.archiveAgents([agent.id]) };
+        const release: SwipeAction = {
+          id: "release",
+          label: "Release",
+          tone: "default",
+          disabled: agent.pid === null,
+          run: () => ctx.releaseAgents([agent.id]),
+        };
+        const primary: SwipeAction = {
+          id: "open",
+          label: "Open",
+          tone: "primary",
+          disabled: !ctx.canOpenAgent,
+          run: () => ctx.openAgent(agent.id),
+        };
+        return [secondary, release, primary];
       }
 
       if (row.kind === "workspace") {
@@ -391,13 +388,7 @@ export function AgentManagerPanel({ theme, host, layout, navigation }: PluginSur
           .filter((agent) => agent.workspaceId === row.id && agent.pid !== null && agent.status !== "running")
           .map((agent) => agent.id);
         return [
-          {
-            id: "open",
-            label: "Open",
-            tone: "primary",
-            disabled: !ctx.canOpenWorkspace,
-            run: () => ctx.openWorkspace(row.id),
-          },
+          { id: "archive", label: "Archive", tone: "default", run: () => ctx.archiveWorkspace(row.id) },
           {
             id: "release",
             label: idle.length > 0 ? `Release (${idle.length})` : "Release",
@@ -406,10 +397,11 @@ export function AgentManagerPanel({ theme, host, layout, navigation }: PluginSur
             run: () => ctx.releaseAgents(idle),
           },
           {
-            id: "archive",
-            label: "Archive",
-            tone: "default",
-            run: () => ctx.archiveWorkspace(row.id),
+            id: "open",
+            label: "Open",
+            tone: "primary",
+            disabled: !ctx.canOpenWorkspace,
+            run: () => ctx.openWorkspace(row.id),
           },
         ];
       }
@@ -435,6 +427,19 @@ export function AgentManagerPanel({ theme, host, layout, navigation }: PluginSur
           ];
     },
     [visibleAgents, workspaceRows, ctx],
+  );
+
+  const setSwipeOpen = useCallback(
+    (key: string | null) => {
+      setOpenSwipe(key);
+      if (key) {
+        const row = rows.find((entry) => entry.key === key);
+        if (row) {
+          setSelection(row);
+        }
+      }
+    },
+    [rows],
   );
 
   const onSelect = useCallback(
@@ -601,8 +606,8 @@ export function AgentManagerPanel({ theme, host, layout, navigation }: PluginSur
               swipe={{
                 enabled: compact,
                 openKey: openSwipe,
-                setOpenKey: setOpenSwipe,
-                actionWidth: 80,
+                setOpenKey: setSwipeOpen,
+                actionWidth: 76,
                 actionsFor: swipeActions,
               }}
             />
