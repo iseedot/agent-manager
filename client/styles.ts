@@ -246,6 +246,7 @@ export function buildStyles(theme: ThemeLike, compact: boolean): { styles: Style
       marginTop: 3,
       marginBottom: 1,
     },
+    treeRowNested: { backgroundColor: alpha(palette.foreground, 0.05) },
     treeRowSelected: { borderColor: tones.accent, backgroundColor: palette.surface2 },
     treeRowArchived: { opacity: 0.72 },
     treeBar: {

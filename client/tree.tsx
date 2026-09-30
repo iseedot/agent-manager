@@ -50,7 +50,7 @@ export function TreePane({
             onPress={() => onSelect(row)}
             style={[
               styles.treeRow,
-              group ? styles.treeRowProject : null,
+              group ? styles.treeRowProject : styles.treeRowNested,
               selected ? styles.treeRowSelected : null,
               row.archived ? styles.treeRowArchived : null,
             ]}
