@@ -134,6 +134,20 @@ export interface TreeMetrics {
   chevron: number;
 }
 
+export interface TreeRowProfile {
+  paddingVertical: number;
+  gap: number;
+  titleLine: number;
+  titleLineSmall: number;
+  factsLine: number;
+}
+
+export function treeRowProfile(compact: boolean): TreeRowProfile {
+  return compact
+    ? { paddingVertical: 6, gap: 1, titleLine: 16, titleLineSmall: 15, factsLine: 14 }
+    : { paddingVertical: 8, gap: 2, titleLine: 18, titleLineSmall: 17, factsLine: 16 };
+}
+
 export function treeMetrics(compact: boolean): TreeMetrics {
   return { chevron: compact ? 11 : 8 };
 }
@@ -148,6 +162,7 @@ export function buildStyles(theme: ThemeLike, compact: boolean): { styles: Style
     statusDanger: palette.statusDanger,
   });
   const tree = treeMetrics(compact);
+  const row = treeRowProfile(compact);
   const styles: StyleMap = {
     screen: { flex: 1, backgroundColor: palette.surface0, padding: compact ? 12 : 18 },
     headline: { color: palette.foreground, fontSize: compact ? 15 : 16, fontWeight: "600" as const },
@@ -236,10 +251,8 @@ export function buildStyles(theme: ThemeLike, compact: boolean): { styles: Style
     treeBar: {
       width: tree.chevron,
       alignSelf: "stretch" as const,
-      marginVertical: compact ? 6 : 5,
       alignItems: "center" as const,
       justifyContent: "center" as const,
-      borderRadius: 3,
     },
     treeBarProject: { backgroundColor: tones.accent },
     treeBarWorkspace: { backgroundColor: alpha(palette.foregroundMuted, 0.3) },
@@ -250,23 +263,28 @@ export function buildStyles(theme: ThemeLike, compact: boolean): { styles: Style
     treeRowBody: { flexDirection: "row" as const, flex: 1, gap: 4 },
     treeRowContent: {
       flex: 1,
-      gap: 1,
+      gap: row.gap,
       justifyContent: "center" as const,
-      paddingVertical: compact ? 6 : 4,
+      paddingVertical: row.paddingVertical,
     },
     treeRowInner: { flexDirection: "row" as const, alignItems: "center" as const, gap: 6 },
     treeLabel: {
       color: palette.foreground,
       fontSize: 13,
-      lineHeight: 16,
+      lineHeight: row.titleLine,
       fontWeight: "600" as const,
       flexShrink: 1,
     },
-    treeLabelProject: { fontSize: 12, lineHeight: 15, fontWeight: "700" as const, letterSpacing: 0.2 },
-    treeLabelWorkspace: { fontSize: 13, lineHeight: 16, fontWeight: "600" as const },
-    treeLabelAgent: { fontSize: 12.5, lineHeight: 15, fontWeight: "500" as const },
+    treeLabelProject: {
+      fontSize: 12,
+      lineHeight: row.titleLineSmall,
+      fontWeight: "700" as const,
+      letterSpacing: 0.2,
+    },
+    treeLabelWorkspace: { fontSize: 13, lineHeight: row.titleLine, fontWeight: "600" as const },
+    treeLabelAgent: { fontSize: 12.5, lineHeight: row.titleLineSmall, fontWeight: "500" as const },
     treeLabelArchived: { color: palette.foregroundMuted, fontWeight: "500" as const },
-    treeFacts: { color: palette.foregroundMuted, fontSize: 11, lineHeight: 14 },
+    treeFacts: { color: palette.foregroundMuted, fontSize: 11, lineHeight: row.factsLine },
     treeCountBadge: {
       minWidth: 22,
       height: 18,
