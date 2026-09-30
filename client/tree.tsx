@@ -1,8 +1,6 @@
-import { useState } from "react";
 import { Pressable, ScrollView, Text, View } from "react-native";
 
 import { factStyle, type FactTone, type StyleMap } from "./styles";
-import { SwipeRow, type SwipeAction } from "./swipe";
 
 export type TreeKind = "project" | "workspace" | "agent" | "orphan";
 
@@ -29,7 +27,6 @@ export function TreePane({
   styles,
   compact,
   emptyText,
-  swipe,
 }: {
   rows: TreeRow[];
   selectedKey: string | null;
@@ -38,27 +35,14 @@ export function TreePane({
   styles: StyleMap;
   compact: boolean;
   emptyText: string;
-  swipe?: {
-    enabled: boolean;
-    openKey: string | null;
-    setOpenKey: (key: string | null) => void;
-    actionWidth: number;
-    actionsFor: (row: TreeRow) => SwipeAction[];
-  };
 }) {
-  const [swiping, setSwiping] = useState(false);
   return (
-    <ScrollView
-      style={styles.paneScroll}
-      contentContainerStyle={styles.paneContent}
-      scrollEnabled={!swiping}
-    >
+    <ScrollView style={styles.paneScroll} contentContainerStyle={styles.paneContent}>
       {rows.length === 0 ? <Text style={styles.empty}>{emptyText}</Text> : null}
       {rows.map((row) => {
         const selected = row.key === selectedKey;
         const group = row.kind === "project" || row.kind === "orphan";
-        const spacing = group ? styles.swipeWrapProject : null;
-        const rowNode = (
+        return (
           <Pressable
             key={row.key}
             accessibilityRole="button"
@@ -124,28 +108,6 @@ export function TreePane({
               </View>
             </View>
           </Pressable>
-        );
-        if (!swipe?.enabled) {
-          return (
-            <View key={row.key} style={spacing}>
-              {rowNode}
-            </View>
-          );
-        }
-        return (
-          <SwipeRow
-            key={row.key}
-            enabled={swipe.enabled}
-            actions={swipe.actionsFor(row)}
-            actionWidth={swipe.actionWidth}
-            open={swipe.openKey === row.key}
-            onOpenChange={(open) => swipe.setOpenKey(open ? row.key : null)}
-            onActiveChange={setSwiping}
-            styles={styles}
-            wrapStyle={spacing}
-          >
-            {rowNode}
-          </SwipeRow>
         );
       })}
     </ScrollView>
