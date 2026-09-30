@@ -110,6 +110,9 @@ export function SettingsSection({
           (id) => onScope(id === "all" ? "all" : "unarchived"),
         )}
       </View>
+      <Text style={styles.autoStatus}>
+        Unarchived hides archived workspaces and sessions; All shows every record.
+      </Text>
       <View style={styles.autoDivider} />
       <View style={styles.autoRow}>
         <Text style={styles.autoLabel}>Auto-release</Text>

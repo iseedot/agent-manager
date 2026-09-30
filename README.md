@@ -46,7 +46,8 @@ unarchived.
 
 Paseo keeps which tab you have open, hidden or scrolled out of view in the app itself, so no plugin can
 reproduce the tab strip exactly. `Unarchived (N)` is the closest honest equivalent: it is exactly the set
-Paseo is allowed to show as tabs.
+Paseo is allowed to show as tabs. The switch lives in Settings and applies to the whole tree — archived
+workspaces disappear from it too, not just archived sessions.
 
 ## Actions
 

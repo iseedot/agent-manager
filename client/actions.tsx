@@ -102,9 +102,16 @@ export function ActionsPane({
 
   if (!selection) {
     return (
-      <View style={styles.actionsPaneContent}>
+      <ScrollView style={styles.paneScroll} contentContainerStyle={styles.actionsPaneContent}>
+        {showBack ? (
+          <View style={styles.treeRowInner}>
+            <Pressable accessibilityRole="button" style={styles.chip} onPress={onBack}>
+              <Text style={styles.chipText}>Back</Text>
+            </Pressable>
+          </View>
+        ) : null}
         <Text style={styles.empty}>Select a project, workspace or session on the left.</Text>
-      </View>
+      </ScrollView>
     );
   }
 

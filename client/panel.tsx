@@ -236,10 +236,29 @@ export function AgentManagerPanel({ theme, host, layout, navigation }: PluginSur
     [visibleAgents],
   );
 
-  const rows = useMemo(
-    () => buildRows(workspaceRows, projectRows, visibleAgents, collapsedProjects, expandedWorkspaces, terminalsByWorkspace),
-    [workspaceRows, projectRows, visibleAgents, collapsedProjects, expandedWorkspaces, terminalsByWorkspace],
+  const visibleWorkspaces = useMemo(
+    () => (scope === "unarchived" ? workspaceRows.filter((row) => row.archivedAt === null) : workspaceRows),
+    [workspaceRows, scope],
   );
+
+  const rows = useMemo(
+    () =>
+      buildRows(
+        visibleWorkspaces,
+        projectRows,
+        visibleAgents,
+        collapsedProjects,
+        expandedWorkspaces,
+        terminalsByWorkspace,
+      ),
+    [visibleWorkspaces, projectRows, visibleAgents, collapsedProjects, expandedWorkspaces, terminalsByWorkspace],
+  );
+
+  useEffect(() => {
+    if (!selection && compact) {
+      setDetailOpen(false);
+    }
+  }, [selection, compact]);
 
   useEffect(() => {
     if (autoSelected.current || selection || workspaceRows.length === 0) {
@@ -474,7 +493,11 @@ export function AgentManagerPanel({ theme, host, layout, navigation }: PluginSur
               onToggle={onToggle}
               styles={styles}
               compact={compact}
-              emptyText="No workspace on this host."
+              emptyText={
+                scope === "unarchived"
+                  ? "No unarchived workspace here — switch Settings › Show to All."
+                  : "No workspace on this host."
+              }
             />
           </View>
         ) : null}
