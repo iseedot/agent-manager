@@ -36,6 +36,10 @@ title and starting with the session state (`running` / `idle` / `no runtime` / `
   Phones get list → detail with a `Back` button.
 - Every row carries live numbers on one line: which sessions keep a process alive, that memory,
   running count, terminals with their directory and state, provider, labels, last activity.
+- On a phone, swiping a row to the left reveals its actions (open, release, archive/restore) so the
+  common case needs no trip to the right-hand pane. It engages only on a horizontal drag — a tap still
+  selects, the chevron still expands, and the list still scrolls — and destructive actions stay in the
+  pane where they ask first. Desktop keeps the panes and no swipe.
 - `Settings` is collapsed by default and holds the view filter and the auto-release switches.
 - Paseo hands a plugin exactly eleven colours (`surface0` / `surface1` / `surface2`, `border`,
   `foreground`, `foregroundMuted`, `accent`, `accentForeground`, `statusSuccess`, `statusWarning`,

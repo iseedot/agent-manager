@@ -23,6 +23,7 @@ export interface ActionsContext {
   terminalList: TerminalEntryRow[];
   closeTerminal: (terminalId: string) => void;
   canOpenAgent: boolean;
+  canOpenWorkspace: boolean;
   openWorkspace: (workspaceId: string) => void;
   openAgent: (agentId: string) => void;
   activate: (input: { workspaceId: string; workspaceName?: string; tabsOnly?: boolean }) => void;

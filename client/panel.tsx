@@ -24,6 +24,7 @@ import { ActionsPane, agentTitle, statusWord, type ActionsContext } from "./acti
 import { SettingsSection, settingsSummary, type AutoReleasePatch } from "./settings";
 import { formatBytes, formatMegabytes, formatTime, message } from "./format";
 import { buildStyles, type FactTone, type TerminalInfo } from "./styles";
+import type { SwipeAction } from "./swipe";
 import { TreePane, type TreeKind, type TreeRow } from "./tree";
 import { JobLine, workspaceLabel, workspaceStats, useWorkspaceJobs } from "./workspaces";
 
@@ -51,6 +52,7 @@ export function AgentManagerPanel({ theme, host, layout, navigation }: PluginSur
   const [detailOpen, setDetailOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [scope, setScope] = useState<"unarchived" | "all">("unarchived");
+  const [openSwipe, setOpenSwipe] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<string | null>(null);
   const [cooling, setCooling] = useState(false);
   const cooldownTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -299,6 +301,7 @@ export function AgentManagerPanel({ theme, host, layout, navigation }: PluginSur
       terminalList: workspaces.data?.terminalList ?? [],
       closeTerminal: (terminalId) => closeOneTerminalAction.mutate([terminalId]),
       canOpenAgent: typeof navigation?.openAgent === "function",
+      canOpenWorkspace: typeof navigation?.openWorkspace === "function",
       openWorkspace: (workspaceId) => navigation?.openWorkspace?.({ workspaceId }),
       openAgent: (agentId) => navigation?.openAgent?.({ agentId }),
       activate: (input) => {
@@ -335,6 +338,103 @@ export function AgentManagerPanel({ theme, host, layout, navigation }: PluginSur
       restoreSession,
       deleteAgentsAction,
     ],
+  );
+
+  const swipeActions = useCallback(
+    (row: TreeRow): SwipeAction[] => {
+      if (row.kind === "agent") {
+        const agent = visibleAgents.find((entry) => entry.id === row.id);
+        if (!agent) {
+          return [];
+        }
+        const actions: SwipeAction[] = [
+          {
+            id: "open",
+            label: "Open",
+            tone: "primary",
+            disabled: !ctx.canOpenAgent,
+            run: () => ctx.openAgent(agent.id),
+          },
+          {
+            id: "release",
+            label: "Release",
+            tone: "default",
+            disabled: agent.pid === null,
+            run: () => ctx.releaseAgents([agent.id]),
+          },
+        ];
+        actions.push(
+          agent.archived
+            ? { id: "restore", label: "Restore", tone: "default", run: () => ctx.restoreAgent(agent.id) }
+            : { id: "archive", label: "Archive", tone: "default", run: () => ctx.archiveAgents([agent.id]) },
+        );
+        return actions;
+      }
+
+      if (row.kind === "workspace") {
+        const workspace = workspaceRows.find((entry) => entry.workspaceId === row.id);
+        if (!workspace) {
+          return [];
+        }
+        const archived = workspace.archivedAt !== null;
+        if (archived) {
+          return [
+            {
+              id: "restore",
+              label: "Restore",
+              tone: "primary",
+              run: () => ctx.activate({ workspaceId: row.id, workspaceName: row.label }),
+            },
+          ];
+        }
+        const idle = visibleAgents
+          .filter((agent) => agent.workspaceId === row.id && agent.pid !== null && agent.status !== "running")
+          .map((agent) => agent.id);
+        return [
+          {
+            id: "open",
+            label: "Open",
+            tone: "primary",
+            disabled: !ctx.canOpenWorkspace,
+            run: () => ctx.openWorkspace(row.id),
+          },
+          {
+            id: "release",
+            label: idle.length > 0 ? `Release (${idle.length})` : "Release",
+            tone: "default",
+            disabled: idle.length === 0,
+            run: () => ctx.releaseAgents(idle),
+          },
+          {
+            id: "archive",
+            label: "Archive",
+            tone: "default",
+            run: () => ctx.archiveWorkspace(row.id),
+          },
+        ];
+      }
+
+      const scoped =
+        row.kind === "orphan"
+          ? visibleAgents.filter((agent) => agent.workspaceId === null)
+          : visibleAgents.filter((agent) =>
+              workspaceRows.some((workspace) => workspace.projectId === row.id && workspace.workspaceId === agent.workspaceId),
+            );
+      const idle = scoped
+        .filter((agent) => agent.pid !== null && agent.status !== "running")
+        .map((agent) => agent.id);
+      return idle.length === 0
+        ? []
+        : [
+            {
+              id: "release",
+              label: `Release (${idle.length})`,
+              tone: "primary",
+              run: () => ctx.releaseAgents(idle),
+            },
+          ];
+    },
+    [visibleAgents, workspaceRows, ctx],
   );
 
   const onSelect = useCallback(
@@ -498,6 +598,13 @@ export function AgentManagerPanel({ theme, host, layout, navigation }: PluginSur
                   ? "No unarchived workspace here — switch Settings › Show to All."
                   : "No workspace on this host."
               }
+              swipe={{
+                enabled: compact,
+                openKey: openSwipe,
+                setOpenKey: setOpenSwipe,
+                actionWidth: 80,
+                actionsFor: swipeActions,
+              }}
             />
           </View>
         ) : null}
