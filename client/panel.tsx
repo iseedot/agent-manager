@@ -25,6 +25,7 @@ import { SettingsSection, settingsSummary, type AutoReleasePatch } from "./setti
 import { formatBytes, formatMegabytes, formatTime, message } from "./format";
 import { buildStyles, type FactTone, type TerminalInfo } from "./styles";
 import type { SwipeAction } from "./swipe";
+import { SwipeRow } from "./swipe";
 import { TreePane, type TreeKind, type TreeRow } from "./tree";
 import { JobLine, workspaceLabel, workspaceStats, useWorkspaceJobs } from "./workspaces";
 
@@ -629,6 +630,7 @@ export function AgentManagerPanel({ theme, host, layout, navigation }: PluginSur
       </View>
 
       <View style={styles.footerRow}>
+        <Text style={styles.buildStamp}>ui {uiFingerprint()}</Text>
         <View style={styles.jobRow}>
           <JobLine job={jobs.job} error={jobs.error} busy={jobs.busy} theme={theme} />
         </View>
@@ -914,6 +916,22 @@ function compareAgents(left: AgentRow, right: AgentRow): number {
 
 function findRow(rows: TreeRow[], kind: TreeKind, id: string): TreeRow | null {
   return rows.find((row) => row.kind === kind && row.id === id) ?? null;
+}
+
+function uiFingerprint(): string {
+  const sources = [AgentManagerPanel, TreePane, ActionsPane, SettingsSection, SwipeRow].map((component) => {
+    try {
+      return String(component);
+    } catch {
+      return "";
+    }
+  });
+  let hash = 2166136261;
+  for (const part of sources.join("|")) {
+    hash ^= part.charCodeAt(0);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(36).slice(0, 6);
 }
 
 function toggleSet(current: Set<string>, key: string, on: boolean): Set<string> {

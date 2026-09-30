@@ -151,6 +151,16 @@ own client and the session protocol on `ws://<daemon.listen>/ws`.
 - Workspaces whose project was removed are still listed, as `project removed`. `Delete` on a workspace
   also drops its registry record, remembered in `~/.paseo/agent-manager/deleted-workspaces.json`.
 
+## Checking which build a client runs
+
+A client only picks up plugin code when it fetches the catalog — at connect, or when the daemon
+announces `plugin_catalog_changed` after an install, a reload or an update. A phone that was asleep or
+offline during the change keeps running the bundle it already has until it reconnects.
+
+The footer of the panel shows a `ui <code>` stamp derived from the client code that is actually
+executing, so a stale client is easy to spot: compare it with the code the current source produces. A
+second composer pill (CPU) and `Open Agent Manager` in ⌘K are part of the same build.
+
 ## Development
 
 ```bash

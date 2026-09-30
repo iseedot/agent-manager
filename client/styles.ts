@@ -449,6 +449,7 @@ export function buildStyles(theme: ThemeLike, compact: boolean): { styles: Style
       borderColor: palette.border,
       backgroundColor: palette.surface1,
     },
+    buildStamp: { color: palette.foregroundMuted, fontSize: 10, opacity: 0.8 },
     footerRow: { gap: 8, marginTop: 10 },
     jobRow: { marginTop: 8 },
   };
