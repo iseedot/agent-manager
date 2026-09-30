@@ -55,11 +55,6 @@ export function TreePane({
               row.archived ? styles.treeRowArchived : null,
             ]}
           >
-            {group ? (
-              <View style={[styles.treeStripe, row.archived ? styles.treeStripeMuted : styles.treeStripeProject]} />
-            ) : row.kind === "workspace" ? (
-              <View style={[styles.treeStripeWorkspace, row.archived ? styles.treeStripeMuted : null]} />
-            ) : null}
             <View style={styles.treeRowBody}>
               {row.expandable ? (
                 <Pressable
@@ -67,12 +62,19 @@ export function TreePane({
                   accessibilityLabel={row.expanded ? "Collapse" : "Expand"}
                   hitSlop={compact ? 14 : 8}
                   onPress={() => onToggle(row)}
-                  style={[styles.treeChevron, compact ? styles.treeChevronTap : null]}
+                  style={[styles.treeBar, group ? styles.treeBarProject : styles.treeBarWorkspace]}
                 >
-                  <Text style={styles.treeChevronText}>{row.expanded ? "▼" : "▶"}</Text>
+                  <Text
+                    style={[
+                      styles.treeBarLabel,
+                      group ? styles.treeBarLabelProject : styles.treeBarLabelWorkspace,
+                    ]}
+                  >
+                    {row.expanded ? "▼" : "▶"}
+                  </Text>
                 </Pressable>
               ) : (
-                <View style={styles.treeChevronSpacer} />
+                <View style={styles.treeBarSpacer} />
               )}
               <View style={styles.treeRowContent}>
                 <View style={styles.treeRowInner}>

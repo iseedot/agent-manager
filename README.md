@@ -24,22 +24,21 @@ host.lan · 27 records · 5 unarchived (4 no runtime) · 22 archived
 └──────────────────────────────┴──────────────────────────────────────────────┘
 ```
 
-Rows are flat — nothing is indented, so long titles keep the full width. The expand arrow is a narrow
-full-height bar hugging the left edge. The level is read from that left edge alone: a project has a
-filled row with a coloured stripe and a bold label, a workspace has a thin grey stripe, and a session
-has neither. Each row carries one secondary line of live numbers, aligned with its title and starting
-with the session state (`running` / `idle` / `no runtime` / `error`).
+Rows are flat — nothing is indented, so long titles keep the full width. The expand arrow *is* the level
+marker: one full-height bar hugging the left edge, filled by level (accent for a project, a translucent
+grey for a workspace, nothing at all for a session) with the arrow glyph inside it. Selecting a row
+outlines it in the accent colour. Each row carries one secondary line of live numbers, aligned with its
+title and starting with the session state (`running` / `idle` / `no runtime` / `error`).
 
 - One tree on the left (project → workspace → session), the actions for the selection on the right.
   Phones get list → detail with a `Back` button.
 - Every row carries live numbers on one line: which sessions keep a process alive, that memory,
   running count, terminals with their directory and state, provider, labels, last activity.
 - `Settings` is collapsed by default and holds the view filter and the auto-release switches.
-- A theme strip at the top of the panel shows every colour Paseo hands a plugin (the host palette)
-  next to the tones this plugin derives from it, each with its raw value, for checking a theme at a
-  glance. Paseo passes eleven colours — `surface0` / `surface1` / `surface2`, `border`, `foreground`,
-  `foregroundMuted`, `accent`, `accentForeground`, `statusSuccess`, `statusWarning`, `statusDanger` —
-  and nothing else; the derived tones are what the panel actually paints with.
+- Paseo hands a plugin exactly eleven colours (`surface0` / `surface1` / `surface2`, `border`,
+  `foreground`, `foregroundMuted`, `accent`, `accentForeground`, `statusSuccess`, `statusWarning`,
+  `statusDanger`) and nothing else. The panel re-tones the ones it paints with so they stay legible on
+  both light and dark themes, which is why the colours in the panel are not the raw theme values.
 
 ## Terms
 

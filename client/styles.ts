@@ -90,6 +90,14 @@ function toHsl(rgb: Rgb): { h: number; s: number; l: number } {
   return { h: h < 0 ? h + 360 : h, s, l };
 }
 
+function alpha(color: string, value: number): string {
+  const rgb = parseColor(color);
+  if (!rgb) {
+    return color;
+  }
+  return `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, ${value})`;
+}
+
 function hsl(h: number, s: number, l: number): string {
   return `hsl(${Math.round(h)}, ${Math.round(s * 100)}%, ${Math.round(l * 100)}%)`;
 }
@@ -127,7 +135,7 @@ export interface TreeMetrics {
 }
 
 export function treeMetrics(compact: boolean): TreeMetrics {
-  return { chevron: compact ? 18 : 14 };
+  return { chevron: compact ? 22 : 16 };
 }
 
 export function buildStyles(theme: ThemeLike, compact: boolean): { styles: StyleMap; tones: Tones } {
@@ -160,17 +168,6 @@ export function buildStyles(theme: ThemeLike, compact: boolean): { styles: Style
       gap: 8,
       marginTop: 2,
     },
-    paletteRow: { flexDirection: "row" as const, gap: 6 },
-    paletteItem: { width: 64, gap: 2 },
-    paletteSwatch: {
-      height: 20,
-      borderRadius: 5,
-      borderWidth: 1,
-      borderColor: palette.border,
-    },
-    paletteKey: { color: palette.foregroundMuted, fontSize: 9, lineHeight: 12 },
-    paletteValue: { color: palette.foregroundMuted, fontSize: 9, lineHeight: 12, opacity: 0.85 },
-    paletteNote: { color: palette.foregroundMuted, fontSize: 10, lineHeight: 14 },
     heroSettingsLabel: { flexDirection: "row" as const, alignItems: "center" as const, gap: 6 },
     heroSettingsHint: { color: palette.foregroundMuted, fontSize: 11, flexShrink: 1, flexGrow: 1 },
     heroButtons: {
@@ -190,6 +187,9 @@ export function buildStyles(theme: ThemeLike, compact: boolean): { styles: Style
       marginTop: 10,
     },
     dot: { width: 7, height: 7, borderRadius: 4 },
+    dotOk: { backgroundColor: tones.ok },
+    dotWarn: { backgroundColor: tones.warn },
+    dotMuted: { backgroundColor: palette.foregroundMuted, opacity: 0.5 },
     body: {
       flex: 1,
       flexDirection: compact ? ("column" as const) : ("row" as const),
@@ -219,10 +219,10 @@ export function buildStyles(theme: ThemeLike, compact: boolean): { styles: Style
     treeRow: {
       position: "relative" as const,
       borderRadius: 8,
-      borderWidth: 1,
+      borderWidth: 0.5,
       borderColor: "transparent",
       paddingRight: 8,
-      paddingLeft: 4,
+      paddingLeft: 0,
       overflow: "hidden" as const,
     },
     treeRowProject: {
@@ -233,20 +233,19 @@ export function buildStyles(theme: ThemeLike, compact: boolean): { styles: Style
     },
     treeRowSelected: { borderColor: tones.accent, backgroundColor: palette.surface2 },
     treeRowArchived: { opacity: 0.72 },
-    treeStripe: { position: "absolute" as const, left: 0, top: 0, bottom: 0, width: 3 },
-    treeStripeProject: { backgroundColor: tones.accent },
-    treeStripeWorkspace: {
-      position: "absolute" as const,
-      left: 0,
-      top: 2,
-      bottom: 2,
-      width: 2,
-      borderRadius: 1,
-      backgroundColor: palette.foregroundMuted,
-      opacity: 0.55,
+    treeBar: {
+      width: tree.chevron,
+      alignItems: "center" as const,
+      justifyContent: "center" as const,
+      borderTopLeftRadius: 7,
+      borderBottomLeftRadius: 7,
     },
-    treeStripeMuted: { backgroundColor: palette.foregroundMuted, opacity: 0.5 },
-    treeRowInner: { flexDirection: "row" as const, alignItems: "center" as const, gap: 6 },
+    treeBarProject: { backgroundColor: tones.accent },
+    treeBarWorkspace: { backgroundColor: alpha(palette.foregroundMuted, 0.3) },
+    treeBarLabel: { fontSize: compact ? 11 : 9 },
+    treeBarLabelProject: { color: tones.onAccent },
+    treeBarLabelWorkspace: { color: palette.foreground },
+    treeBarSpacer: { width: tree.chevron },
     treeRowBody: { flexDirection: "row" as const, flex: 1, gap: 4 },
     treeRowContent: {
       flex: 1,
@@ -254,18 +253,7 @@ export function buildStyles(theme: ThemeLike, compact: boolean): { styles: Style
       justifyContent: "center" as const,
       paddingVertical: compact ? 10 : 7,
     },
-    treeChevron: {
-      width: tree.chevron,
-      alignItems: "center" as const,
-      justifyContent: "center" as const,
-      borderRadius: 6,
-    },
-    treeChevronTap: { backgroundColor: palette.surface1, borderWidth: 1, borderColor: palette.border },
-    treeChevronSpacer: { width: tree.chevron },
-    treeChevronText: { color: palette.foregroundMuted, fontSize: compact ? 13 : 10 },
-    dotOk: { backgroundColor: tones.ok },
-    dotWarn: { backgroundColor: tones.warn },
-    dotMuted: { backgroundColor: palette.foregroundMuted, opacity: 0.5 },
+    treeRowInner: { flexDirection: "row" as const, alignItems: "center" as const, gap: 6 },
     treeLabel: { color: palette.foreground, fontSize: 13, fontWeight: "600" as const, flexShrink: 1 },
     treeLabelProject: { fontSize: 12, fontWeight: "700" as const, letterSpacing: 0.2 },
     treeLabelWorkspace: { fontSize: 13, fontWeight: "600" as const },
