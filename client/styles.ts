@@ -124,12 +124,10 @@ export function buildTones(input: {
 
 export interface TreeMetrics {
   chevron: number;
-  gap: number;
-  marker: number;
 }
 
 export function treeMetrics(compact: boolean): TreeMetrics {
-  return { chevron: compact ? 18 : 14, gap: 6, marker: 8 };
+  return { chevron: compact ? 18 : 14 };
 }
 
 export function buildStyles(theme: ThemeLike, compact: boolean): { styles: StyleMap; tones: Tones } {
@@ -254,11 +252,8 @@ export function buildStyles(theme: ThemeLike, compact: boolean): { styles: Style
     treeChevronTap: { backgroundColor: palette.surface1, borderWidth: 1, borderColor: palette.border },
     treeChevronSpacer: { width: tree.chevron },
     treeChevronText: { color: palette.foregroundMuted, fontSize: compact ? 13 : 10 },
-    treeDot: { width: 8, height: 8, borderRadius: 4 },
     dotOk: { backgroundColor: tones.ok },
     dotWarn: { backgroundColor: tones.warn },
-    dotDanger: { backgroundColor: tones.danger },
-    dotAccent: { backgroundColor: tones.accent },
     dotMuted: { backgroundColor: palette.foregroundMuted, opacity: 0.5 },
     treeLabel: { color: palette.foreground, fontSize: 13, fontWeight: "600" as const, flexShrink: 1 },
     treeLabelProject: { fontSize: 12, fontWeight: "700" as const, letterSpacing: 0.2 },
@@ -407,12 +402,4 @@ export function factStyle(tone: FactTone, styles: StyleMap): StyleMap[string] {
   if (tone === "warn") return styles.factWarn;
   if (tone === "danger") return styles.factDanger;
   return undefined;
-}
-
-export function statusDotStyle(status: string, styles: StyleMap): StyleMap[string] {
-  if (status === "running") return styles.dotOk;
-  if (status === "error") return styles.dotDanger;
-  if (status === "idle") return styles.dotAccent;
-  if (status === "initializing" || status === "attention") return styles.dotWarn;
-  return styles.dotMuted;
 }

@@ -1,6 +1,6 @@
 import { Pressable, ScrollView, Text, View } from "react-native";
 
-import { factStyle, statusDotStyle, treeMetrics, type FactTone, type StyleMap } from "./styles";
+import { factStyle, type FactTone, type StyleMap } from "./styles";
 
 export type TreeKind = "project" | "workspace" | "agent" | "orphan";
 
@@ -36,7 +36,6 @@ export function TreePane({
   compact: boolean;
   emptyText: string;
 }) {
-  const { marker } = treeMetrics(compact);
   return (
     <ScrollView style={styles.paneScroll} contentContainerStyle={styles.paneContent}>
       {rows.length === 0 ? <Text style={styles.empty}>{emptyText}</Text> : null}
@@ -77,11 +76,6 @@ export function TreePane({
               )}
               <View style={styles.treeRowContent}>
                 <View style={styles.treeRowInner}>
-                  {row.kind === "agent" ? (
-                    <View style={[styles.treeDot, statusDotStyle(row.status ?? "closed", styles)]} />
-                  ) : (
-                    <View style={{ width: marker, height: marker }} />
-                  )}
                   <Text
                     style={[
                       styles.treeLabel,

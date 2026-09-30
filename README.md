@@ -15,19 +15,20 @@ host.lan · 27 records · 5 unarchived (4 no runtime) · 22 archived
 │▶ ▎project-a         2        │ WORKSPACE · paseo                            │
 │▼ ▏workspace-name    5        │ /srv/project-a                               │
 │     main · 2 holding · 210 MB│ main · 2 holding · 210 MB · 5 unarchived      │
-│   ● session title            │ [Open in app] [Release idle (2)]             │
-│     132 MB · pid 7 · running │ [Release running (1)] [Reopen archived (1)]  │
-│   ● ↳ sub-agent               │ [Close open tabs (5)] [Close terminals (2)]  │
-│   ○ no runtime session       │ [Archive workspace] [Rename workspace…]      │
+│     session title            │ [Open in app] [Release idle (2)]             │
+│     running · 132 MB · pid 7 │ [Release running (1)] [Reopen archived (1)]  │
+│     ↳ sub-agent               │ [Close open tabs (5)] [Close terminals (2)]  │
+│     no runtime · 20h ago     │ [Archive workspace] [Rename workspace…]      │
 │▼ ▏old-workspace (archived) 0 │                                              │
 │▶ ▎No workspace         1     │                                              │
 └──────────────────────────────┴──────────────────────────────────────────────┘
 ```
 
 Rows are flat — nothing is indented, so long titles keep the full width. The expand arrow is a narrow
-full-height bar hugging the left edge, and the level is read from the row itself: a project has a filled
-row with an accent stripe and a bold label, a workspace has a thin stripe, a session has its status dot.
-Every row carries one secondary line of live numbers, aligned with its title.
+full-height bar hugging the left edge. The level is read from that left edge alone: a project has a
+filled row with a coloured stripe and a bold label, a workspace has a thin grey stripe, and a session
+has neither. Each row carries one secondary line of live numbers, aligned with its title and starting
+with the session state (`running` / `idle` / `no runtime` / `error`).
 
 - One tree on the left (project → workspace → session), the actions for the selection on the right.
   Phones get list → detail with a `Back` button.
