@@ -1,12 +1,8 @@
+import type { DeleteAgentsOutcome, ReleaseOutcome } from "../shared/contracts";
 import { deleteAgentViaCli } from "./cli";
 import { killAgentViaDaemonMcp } from "./daemon-mcp";
 import { scanAgentProcesses, scanAgentProcessesFresh, type AgentProcessInfo } from "./processes";
 import { describe, readProcStatSync } from "./util";
-
-export interface BatchOutcome {
-  succeeded: string[];
-  failed: Array<{ agentId: string; error: string }>;
-}
 
 interface KillAttempt {
   error: string | null;
@@ -16,10 +12,10 @@ interface KillAttempt {
 export async function releaseAgents(
   agentIds: string[],
   options: { allowSignalFallback: boolean },
-): Promise<{ released: string[]; failed: BatchOutcome["failed"]; freedBytes: number }> {
+): Promise<ReleaseOutcome> {
   const before = await scanAgentProcessesFresh().catch(() => new Map<string, AgentProcessInfo>());
   const released: string[] = [];
-  const failed: BatchOutcome["failed"] = [];
+  const failed: ReleaseOutcome["failed"] = [];
   const pending: Array<{ agentId: string; pid: number; rssBytes: number }> = [];
 
   for (const agentId of agentIds) {
@@ -51,20 +47,20 @@ export async function releaseAgents(
   return { released, failed, freedBytes };
 }
 
-export async function deleteAgents(agentIds: string[]): Promise<BatchOutcome> {
-  const succeeded: string[] = [];
-  const failed: BatchOutcome["failed"] = [];
+export async function deleteAgents(agentIds: string[]): Promise<Omit<DeleteAgentsOutcome, "message">> {
+  const deleted: string[] = [];
+  const failed: DeleteAgentsOutcome["failed"] = [];
 
   for (const agentId of agentIds) {
     const result = await deleteAgentViaCli(agentId);
     if (result.ok) {
-      succeeded.push(agentId);
+      deleted.push(agentId);
     } else {
       failed.push({ agentId, error: result.output || "Delete failed" });
     }
   }
 
-  return { succeeded, failed };
+  return { deleted, failed };
 }
 
 const STILL_RUNNING = "The daemon accepted kill_agent but the runtime process is still alive.";

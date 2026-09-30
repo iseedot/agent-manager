@@ -1,40 +1,45 @@
 import { readFile, readdir, readlink } from "node:fs/promises";
 
+import type { TerminalEntryRow, TerminalSummaryRow } from "../shared/contracts";
 import { readProcStat } from "./util";
 
 export interface TerminalShell {
   pid: number;
   cwd: string | null;
+  command: string;
   rssBytes: number;
   cpuTicks: number;
   children: number;
 }
 
-export interface TerminalSummary {
-  workspaceId: string;
-  count: number;
-  shells: number;
-  busy: number;
-  rssBytes: number;
-}
-
-export interface TerminalEntry {
-  id: string;
-  name: string;
-  cwd: string;
-  workspaceId: string;
-}
-
-interface ProcessStat {
-  ppid: number;
-  cpuTicks: number;
-}
-
-const WORKER_MARKER = "terminal-worker";
+export type TerminalSummary = TerminalSummaryRow;
+export type TerminalEntry = TerminalEntryRow;
 
 export interface TerminalLister {
   terminals: {
     list(options: Record<string, never>): Promise<{ entries?: Array<Record<string, unknown>> }>;
+  };
+}
+
+interface DaemonTerminalClient {
+  listTerminals(
+    cwd?: string,
+    requestId?: string,
+    options?: { workspaceId?: string },
+  ): Promise<{ terminals?: Array<Record<string, unknown>> }>;
+  killTerminal(terminalId: string, requestId?: string): Promise<unknown>;
+}
+
+export function terminalApiFromClient(client: DaemonTerminalClient): TerminalLister & TerminalKiller {
+  return {
+    terminals: {
+      list: async () => ({ entries: (await client.listTerminals(undefined, undefined, {})).terminals ?? [] }),
+      ref: (terminalId: string) => ({
+        kill: async () => {
+          await client.killTerminal(terminalId);
+        },
+      }),
+    },
   };
 }
 
@@ -44,18 +49,55 @@ export interface TerminalKiller {
   };
 }
 
-export async function closeTerminals(paseo: TerminalKiller, terminalIds: string[]): Promise<{ closed: string[]; failed: Array<{ terminalId: string; error: string }> }> {
+interface ProcessStat {
+  ppid: number;
+  cpuTicks: number;
+}
+
+const WORKER_MARKER = "terminal-worker";
+
+export async function closeTerminals(
+  paseo: TerminalLister & TerminalKiller,
+  terminalIds: string[],
+): Promise<{ closed: string[]; failed: Array<{ terminalId: string; error: string }> }> {
+  if (terminalIds.length === 0) {
+    return { closed: [], failed: [] };
+  }
+  const before = await listAllTerminals(paseo).catch(() => null);
+  const known = before === null ? null : new Set(before.map((terminal) => terminal.id));
   const closed: string[] = [];
   const failed: Array<{ terminalId: string; error: string }> = [];
   for (const terminalId of terminalIds) {
+    if (known !== null && !known.has(terminalId)) {
+      failed.push({ terminalId, error: "No such terminal on this host." });
+      continue;
+    }
     try {
       await paseo.terminals.ref(terminalId).kill();
       closed.push(terminalId);
     } catch (error) {
-      failed.push({ terminalId, error: error instanceof Error ? error.message : String(error) });
+      failed.push({ terminalId, error: describeError(error) });
     }
   }
-  return { closed, failed };
+  if (closed.length === 0) {
+    return { closed, failed };
+  }
+  const after = await listAllTerminals(paseo).catch(() => null);
+  if (after === null) {
+    return { closed, failed };
+  }
+  const remaining = new Set(after.map((terminal) => terminal.id));
+  const gone = closed.filter((terminalId) => !remaining.has(terminalId));
+  for (const terminalId of closed) {
+    if (remaining.has(terminalId)) {
+      failed.push({ terminalId, error: "The daemon still lists this terminal." });
+    }
+  }
+  return { closed: gone, failed };
+}
+
+function describeError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 export async function listAllTerminals(paseo: TerminalLister): Promise<TerminalEntry[]> {
@@ -69,11 +111,15 @@ export async function listAllTerminals(paseo: TerminalLister): Promise<TerminalE
     if (!id || !cwd || !owner) {
       continue;
     }
+    const activity = (entry?.activity ?? null) as { state?: unknown; attentionReason?: unknown; changedAt?: unknown } | null;
     terminals.push({
       id,
       name: str(entry?.name) ?? id.slice(0, 7),
       cwd,
       workspaceId: owner,
+      state: str(activity?.state),
+      attention: str(activity?.attentionReason),
+      changedAt: typeof activity?.changedAt === "number" ? activity.changedAt : null,
     });
   }
   return terminals;
@@ -86,7 +132,7 @@ export async function summarizeTerminals(
   const terminals = await list().catch(() => [] as TerminalEntry[]);
   const summaries = new Map<string, TerminalSummary>();
   for (const workspaceId of workspaceIds) {
-    summaries.set(workspaceId, { workspaceId, count: 0, shells: 0, busy: 0, rssBytes: 0 });
+    summaries.set(workspaceId, emptySummary(workspaceId));
   }
   if (terminals.length === 0) {
     return summaries;
@@ -102,9 +148,6 @@ export async function summarizeTerminals(
     }
   }
   for (const [workspaceId, entries] of byWorkspace) {
-    if (!summaries.has(workspaceId)) {
-      summaries.set(workspaceId, { workspaceId, count: 0, shells: 0, busy: 0, rssBytes: 0 });
-    }
     const cwds = new Set(entries.map((terminal) => terminal.cwd.replace(/\/+$/, "")));
     const matching = shells.filter((shell) => shell.cwd !== null && cwds.has(shell.cwd.replace(/\/+$/, "")));
     summaries.set(workspaceId, {
@@ -112,10 +155,88 @@ export async function summarizeTerminals(
       count: entries.length,
       shells: matching.length,
       busy: Math.min(entries.length, matching.filter((shell) => shell.children > 0).length),
+      working: entries.filter((terminal) => terminal.state === "working" || terminal.attention !== null).length,
+      idle: entries.filter((terminal) => terminal.state === "idle" && terminal.attention === null).length,
       rssBytes: matching.reduce((total, shell) => total + shell.rssBytes, 0),
+      names: entries.slice(0, 3).map((terminal) => terminal.name),
     });
   }
   return summaries;
+}
+
+function emptySummary(workspaceId: string): TerminalSummary {
+  return { workspaceId, count: 0, shells: 0, busy: 0, working: 0, idle: 0, rssBytes: 0, names: [] };
+}
+
+export async function closeIdleTerminals(
+  paseo: TerminalLister & TerminalKiller,
+  idleMinutes: number,
+): Promise<{ closed: string[]; failed: Array<{ terminalId: string; error: string }>; skipped: number }> {
+  const terminals = await listAllTerminals(paseo);
+  const shells = await scanTerminalShells().catch(() => [] as TerminalShell[]);
+  const now = Date.now();
+  const deadline = now - idleMinutes * 60000;
+  const targets: string[] = [];
+  let skipped = 0;
+
+  for (const terminal of terminals) {
+    const since = idleSince(terminal, matchingShell(terminal, shells), now);
+    if (since === null || since > deadline) {
+      skipped += 1;
+      continue;
+    }
+    targets.push(terminal.id);
+  }
+  pruneQuiet(terminals.map((terminal) => terminal.id));
+
+  if (targets.length === 0) {
+    return { closed: [], failed: [], skipped };
+  }
+  const result = await closeTerminals(paseo, targets);
+  for (const id of result.closed) {
+    quietSince.delete(id);
+  }
+  return { closed: result.closed, failed: result.failed, skipped };
+}
+
+const QUIET_SHELLS = new Set(["bash", "sh", "zsh", "fish", "dash", "ash", "ksh", "mksh", "nu", "elvish", "xonsh"]);
+const quietSince = new Map<string, number>();
+
+function idleSince(terminal: TerminalEntry, shell: TerminalShell | undefined, now: number): number | null {
+  if (terminal.state === "idle" && terminal.attention === null && terminal.changedAt !== null) {
+    quietSince.delete(terminal.id);
+    return terminal.changedAt;
+  }
+  const quietPrompt =
+    terminal.state === null &&
+    terminal.attention === null &&
+    shell !== undefined &&
+    shell.children === 0 &&
+    QUIET_SHELLS.has(shell.command.replace(/^-/, ""));
+  if (!quietPrompt) {
+    quietSince.delete(terminal.id);
+    return null;
+  }
+  const first = quietSince.get(terminal.id);
+  if (first !== undefined) {
+    return first;
+  }
+  quietSince.set(terminal.id, now);
+  return now;
+}
+
+function pruneQuiet(liveIds: string[]): void {
+  const live = new Set(liveIds);
+  for (const id of [...quietSince.keys()]) {
+    if (!live.has(id)) {
+      quietSince.delete(id);
+    }
+  }
+}
+
+function matchingShell(terminal: TerminalEntry, shells: TerminalShell[]): TerminalShell | undefined {
+  const cwd = terminal.cwd.replace(/\/+$/, "");
+  return shells.find((shell) => shell.cwd !== null && shell.cwd.replace(/\/+$/, "") === cwd);
 }
 
 const SCAN_CACHE_MS = 800;
@@ -169,6 +290,7 @@ async function scanTerminalShellsUncached(): Promise<TerminalShell[]> {
     shells.push({
       pid: shellPid,
       cwd: await readCwd(shellPid),
+      command: await readCommand(shellPid),
       rssBytes,
       cpuTicks,
       children: tree.length - 1,
@@ -223,6 +345,15 @@ async function readResidentBytes(pid: number): Promise<number> {
     return 0;
   }
   return 0;
+}
+
+async function readCommand(pid: number): Promise<string> {
+  try {
+    const raw = await readFile(`/proc/${pid}/comm`, "latin1");
+    return raw.trim();
+  } catch {
+    return "";
+  }
 }
 
 async function readCwd(pid: number): Promise<string | null> {

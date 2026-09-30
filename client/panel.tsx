@@ -1,94 +1,68 @@
-import type { PluginSurfaceProps } from "@getpaseo/plugin/client";
-import { useRpc } from "@getpaseo/plugin/client";
+import { usePaseo, useRpc, type PluginSurfaceProps } from "@getpaseo/plugin/client";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ActivityIndicator, Pressable, ScrollView, Text, TextInput, View } from "react-native";
+import { ActivityIndicator, Pressable, Text, View } from "react-native";
 
 import {
+  agentDeleteRpc,
+  agentRestoreRpc,
   autoReleaseSetRpc,
-  autoReleaseStateRpc,
-  overviewRpc,
   releaseManyRpc,
-  systemRpc,
+  snapshotRpc,
+  terminalCloseRpc,
   terminalsCloseRpc,
-  terminalsRpc,
   workspaceArchiveRpc,
   workspaceCloseTabsRpc,
   workspaceDeleteRpc,
   workspaceRenameRpc,
-  type AutoReleaseSnapshot,
+  type AgentRow,
+  type ProjectRow,
   type SystemStats,
   type WorkspaceRow,
 } from "../shared/contracts";
+import { ActionsPane, agentTitle, statusWord, type ActionsContext } from "./actions";
+import { SettingsSection, settingsSummary, type AutoReleasePatch } from "./settings";
 import { formatBytes, formatMegabytes, formatTime, message } from "./format";
-import { buildTones } from "./palette";
-import {
-  JobLine,
-  activeAtPath,
-  isLastActiveAtPath,
-  reopenCandidate,
-  useWorkspaceJobs,
-  useWorkspaces,
-  workspaceLabel,
-  workspaceStats,
-} from "./workspaces";
+import { buildStyles, type FactTone, type TerminalInfo } from "./styles";
+import { TreePane, type TreeKind, type TreeRow } from "./tree";
+import { JobLine, workspaceLabel, workspaceStats, useWorkspaceJobs } from "./workspaces";
 
 const READ_ONCE = { staleTime: 30000, refetchOnWindowFocus: false } as const;
 
-export function AgentManagerPanel({ theme, host, layout }: PluginSurfaceProps) {
+export function AgentManagerPanel({ theme, host, layout, navigation }: PluginSurfaceProps) {
   const compact = layout.compact;
   const queryClient = useQueryClient();
-  const fetchOverview = useRpc(overviewRpc);
+  const paseo = usePaseo();
+  const fetchSnapshot = useRpc(snapshotRpc);
   const releaseMany = useRpc(releaseManyRpc);
   const archiveWorkspace = useRpc(workspaceArchiveRpc);
   const closeWorkspaceTabs = useRpc(workspaceCloseTabsRpc);
   const deleteWorkspace = useRpc(workspaceDeleteRpc);
-  const fetchSystem = useRpc(systemRpc);
-  const fetchAutoRelease = useRpc(autoReleaseStateRpc);
   const setAutoRelease = useRpc(autoReleaseSetRpc);
-  const fetchTerminals = useRpc(terminalsRpc);
   const closeWorkspaceTerminals = useRpc(terminalsCloseRpc);
+  const closeOneTerminal = useRpc(terminalCloseRpc);
   const renameWorkspace = useRpc(workspaceRenameRpc);
+  const removeAgents = useRpc(agentDeleteRpc);
+  const restoreAgent = useRpc(agentRestoreRpc);
 
-  const [pendingArchive, setPendingArchive] = useState<string | null>(null);
-  const [pendingWorkspaceDelete, setPendingWorkspaceDelete] = useState<string | null>(null);
-  const [pendingTerminals, setPendingTerminals] = useState<string | null>(null);
-  const [renaming, setRenaming] = useState<string | null>(null);
-  const [renameValue, setRenameValue] = useState("");
+  const [selection, setSelection] = useState<TreeRow | null>(null);
+  const [collapsedProjects, setCollapsedProjects] = useState<Set<string>>(() => new Set());
+  const [expandedWorkspaces, setExpandedWorkspaces] = useState<Set<string>>(() => new Set());
+  const [detailOpen, setDetailOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [scope, setScope] = useState<"unarchived" | "all">("unarchived");
   const [feedback, setFeedback] = useState<string | null>(null);
   const [cooling, setCooling] = useState(false);
   const cooldownTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const autoSelected = useRef(false);
 
-  const workspaces = useWorkspaces(host.id);
+  const workspaces = useQuery({
+    queryKey: ["agent-manager", "snapshot", host.id],
+    queryFn: () => fetchSnapshot({}),
+    ...READ_ONCE,
+  });
+
   const jobs = useWorkspaceJobs(host.id);
-
-  const overview = useQuery({
-    queryKey: ["agent-manager", "overview", host.id],
-    queryFn: () => fetchOverview({}),
-    ...READ_ONCE,
-  });
-
-  const terminals = useQuery({
-    queryKey: ["agent-manager", "terminals", host.id],
-    queryFn: () => fetchTerminals({}),
-    ...READ_ONCE,
-  });
-
-  const system = useQuery({
-    queryKey: ["agent-manager", "system", host.id],
-    queryFn: () => fetchSystem({}),
-    ...READ_ONCE,
-  });
-
-  const autoRelease = useQuery({
-    queryKey: ["agent-manager", "auto-release", host.id],
-    queryFn: () => fetchAutoRelease({}),
-    ...READ_ONCE,
-  });
-
-  const refreshAll = useCallback(async () => {
-    await queryClient.invalidateQueries({ queryKey: ["agent-manager"] });
-  }, [queryClient]);
 
   const coolDown = useCallback(() => {
     setCooling(true);
@@ -116,323 +90,258 @@ export function AgentManagerPanel({ theme, host, layout }: PluginSurfaceProps) {
     }
   }, [jobId, jobFinished, coolDown]);
 
-  const agentsOf = useCallback(
-    (workspaceId: string) => (overview.data?.agents ?? []).filter((row) => row.workspaceId === workspaceId),
-    [overview.data?.agents],
+  const refresh = useCallback(async () => {
+    await queryClient.invalidateQueries({ queryKey: ["agent-manager"] });
+  }, [queryClient]);
+
+  const report = useCallback((text: string | null) => setFeedback(text), []);
+
+  const release = useAction(
+    (agentIds: string[]) => releaseMany({ agentIds, allowSignalFallback: true }),
+    (result) => summarize(`Released ${result.released.length}`, formatBytes(result.freedBytes), result.failed),
+    [releaseMany],
+    { refresh, coolDown, report },
   );
 
-  const idleAgents = useMemo(
-    () => (overview.data?.agents ?? []).filter((row) => row.pid !== null && row.status !== "running"),
-    [overview.data?.agents],
+  const archiveWorkspaceAction = useAction(
+    (workspaceId: string) => archiveWorkspace({ workspaceId, confirmLastActive: true }),
+    (result) => (result.refused ? `Blocked: ${result.message}` : result.ok ? result.message : `Failed: ${result.message}`),
+    [archiveWorkspace],
+    { refresh, coolDown, report },
   );
 
-  const releaseWorkspace = useMutation({
-    mutationFn: async (workspaceId: string) => {
-      const agentIds = agentsOf(workspaceId)
-        .filter((row) => row.pid !== null)
-        .map((row) => row.id);
-      return releaseMany({ agentIds, allowSignalFallback: true });
-    },
-    onSuccess: async (result) => {
-      setFeedback(summarize(`Released ${result.released.length}`, formatBytes(result.freedBytes), result.failed));
-      coolDown();
-      await refreshAll();
-    },
-    onError: (error) => setFeedback(`Failed: ${message(error)}`),
-  });
+  const closeTabs = useAction(
+    (workspaceId: string) => closeWorkspaceTabs({ workspaceId }),
+    (result) => result.message,
+    [closeWorkspaceTabs],
+    { refresh, coolDown, report },
+  );
 
-  const releaseIdle = useMutation({
-    mutationFn: () => releaseMany({ agentIds: idleAgents.map((row) => row.id), allowSignalFallback: true }),
-    onSuccess: async (result) => {
-      setFeedback(summarize(`Released ${result.released.length}`, formatBytes(result.freedBytes), result.failed));
-      coolDown();
-      await refreshAll();
-    },
-    onError: (error) => setFeedback(`Failed: ${message(error)}`),
-  });
+  const closeOneTerminalAction = useAction(
+    (terminalIds: string[]) => closeOneTerminal({ terminalIds }),
+    (result) =>
+      result.failed.length > 0
+        ? `Closed ${result.closed.length} terminal(s) · ${result.failed.length} failed`
+        : `Closed ${result.closed.length} terminal(s)`,
+    [closeOneTerminal],
+    { refresh, coolDown, report },
+  );
 
-  const archiveWorkspaceMutation = useMutation({
-    mutationFn: (input: { workspaceId: string; confirmLastActive: boolean }) => archiveWorkspace(input),
-    onSuccess: async (result) => {
-      setPendingArchive(null);
-      setFeedback(result.refused ? `Blocked: ${result.message}` : result.ok ? result.message : `Failed: ${result.message}`);
-      coolDown();
-      await refreshAll();
-    },
-    onError: (error) => setFeedback(`Failed: ${message(error)}`),
-  });
+  const closeTerminals = useAction(
+    (workspaceId: string) => closeWorkspaceTerminals({ workspaceId }),
+    (result) =>
+      result.failed.length > 0
+        ? `Closed ${result.closed.length} terminal(s) · ${result.failed.length} failed`
+        : `Closed ${result.closed.length} terminal(s)`,
+    [closeWorkspaceTerminals],
+    { refresh, coolDown, report },
+  );
 
-  const closeTabsMutation = useMutation({
-    mutationFn: (workspaceId: string) => closeWorkspaceTabs({ workspaceId }),
-    onSuccess: async (result) => {
-      setFeedback(result.message);
-      coolDown();
-      await refreshAll();
+  const deleteWorkspaceAction = useAction(
+    (workspaceId: string) => deleteWorkspace({ workspaceId }),
+    (result) => (result.ok ? result.message : `Failed: ${result.message}`),
+    [deleteWorkspace],
+    {
+      refresh,
+      coolDown,
+      report,
+      after: (result, workspaceId) => {
+        if (result.ok) {
+          setSelection((current) => (current && current.id === workspaceId ? null : current));
+        }
+      },
     },
-    onError: (error) => setFeedback(`Failed: ${message(error)}`),
-  });
+  );
 
-  const closeTerminalsMutation = useMutation({
-    mutationFn: (workspaceId: string) => closeWorkspaceTerminals({ workspaceId }),
-    onSuccess: async (result) => {
-      setPendingTerminals(null);
-      setFeedback(
-        result.failed.length > 0
-          ? `Closed ${result.closed.length} terminal(s) · ${result.failed.length} failed`
-          : `Closed ${result.closed.length} terminal(s)`,
-      );
-      coolDown();
-      await refreshAll();
+  const rename = useAction(
+    (input: { workspaceId: string; title: string }) => renameWorkspace(input),
+    (result) => (result.ok ? result.message : `Failed: ${result.message}`),
+    [renameWorkspace],
+    { refresh, coolDown, report },
+  );
+
+  const archiveAgents = useAction(
+    async (agentIds: string[]) => {
+      for (const agentId of agentIds) {
+        await paseo.agents.ref(agentId).archive();
+      }
+      return agentIds;
     },
-    onError: (error) => setFeedback(`Failed: ${message(error)}`),
-  });
+    (agentIds) => `Archived ${agentIds.length} session(s).`,
+    [paseo],
+    { refresh, coolDown, report },
+  );
 
-  const deleteWorkspaceMutation = useMutation({
-    mutationFn: (workspaceId: string) => deleteWorkspace({ workspaceId }),
-    onSuccess: async (result) => {
-      setPendingWorkspaceDelete(null);
-      setFeedback(result.ok ? result.message : `Failed: ${result.message}`);
-      coolDown();
-      await refreshAll();
+  const restoreSession = useAction(
+    (agentId: string) => restoreAgent({ agentId }),
+    (result) => (result.ok ? result.message : `Failed: ${result.message}`),
+    [restoreAgent],
+    { refresh, coolDown, report },
+  );
+
+  const deleteAgentsAction = useAction(
+    (agentIds: string[]) => removeAgents({ agentIds }),
+    (result) => result.message,
+    [removeAgents],
+    {
+      refresh,
+      coolDown,
+      report,
+      after: (result) => {
+        setSelection((current) => (current && result.deleted.includes(current.id) ? null : current));
+      },
     },
-    onError: (error) => setFeedback(`Failed: ${message(error)}`),
-  });
+  );
 
-  const autoReleaseMutation = useMutation({
-    mutationFn: (patch: {
-      enabled?: boolean;
-      idleMinutes?: number;
-      intervalMinutes?: number;
-      onLoad?: "allIdle" | "threshold" | "off";
-      removeEmptyWorkspaces?: boolean;
-      runNow?: boolean;
-    }) => setAutoRelease(patch),
+  const autoReleaseSave = useMutation({
+    mutationFn: (patch: AutoReleasePatch) => setAutoRelease(patch),
     onSuccess: async (next) => {
-      queryClient.setQueryData(["agent-manager", "auto-release", host.id], next);
+      queryClient.setQueryData(
+        ["agent-manager", "snapshot", host.id],
+        (current: { autoRelease?: unknown } | undefined) => (current ? { ...current, autoRelease: next } : current),
+      );
       setFeedback(`Auto-release: idle ${next.idleMinutes}m · on load ${next.onLoad} · ${next.enabled ? "on" : "off"}`);
       coolDown();
     },
     onError: (error) => setFeedback(`Failed: ${message(error)}`),
   });
 
-  const renameMutation = useMutation({
-    mutationFn: (input: { workspaceId: string; title: string }) => renameWorkspace(input),
-    onSuccess: async (result) => {
-      setRenaming(null);
-      setFeedback(result.ok ? result.message : `Failed: ${result.message}`);
-      coolDown();
-      await refreshAll();
-    },
-    onError: (error) => setFeedback(`Failed: ${message(error)}`),
-  });
+  const terminalsByWorkspace = useMemo(() => {
+    const map = new Map<string, TerminalInfo>();
+    for (const row of workspaces.data?.terminals ?? []) {
+      map.set(row.workspaceId, {
+        count: row.count,
+        busy: row.busy,
+        working: row.working,
+        idle: row.idle,
+        rssBytes: row.rssBytes,
+      });
+    }
+    return map;
+  }, [workspaces.data?.terminals]);
+
+  const workspaceRows = workspaces.data?.workspaces ?? [];
+  const projectRows = workspaces.data?.projects ?? [];
+  const systemStats = workspaces.data?.system;
+  const autoRelease = workspaces.data?.autoRelease;
+
+  const recordRows = workspaces.data?.overview.agents ?? [];
+  const visibleAgents = useMemo(
+    () => (scope === "unarchived" ? recordRows.filter((row) => !row.archived) : recordRows),
+    [recordRows, scope],
+  );
+
+  const idleAgents = useMemo(
+    () => visibleAgents.filter((row) => row.pid !== null && row.status !== "running"),
+    [visibleAgents],
+  );
+
+  const rows = useMemo(
+    () => buildRows(workspaceRows, projectRows, visibleAgents, collapsedProjects, expandedWorkspaces, terminalsByWorkspace),
+    [workspaceRows, projectRows, visibleAgents, collapsedProjects, expandedWorkspaces, terminalsByWorkspace],
+  );
+
+  useEffect(() => {
+    if (autoSelected.current || selection || workspaceRows.length === 0) {
+      return;
+    }
+    const first = workspaceRows.find((row) => row.archivedAt === null) ?? workspaceRows[0];
+    if (!first) {
+      return;
+    }
+    autoSelected.current = true;
+    setSelection(findRow(rows, "workspace", first.workspaceId) ?? null);
+    setExpandedWorkspaces((current) => new Set(current).add(first.workspaceId));
+  }, [rows, selection, workspaceRows]);
 
   const busy =
-    releaseWorkspace.isPending ||
-    releaseIdle.isPending ||
-    archiveWorkspaceMutation.isPending ||
-    closeTabsMutation.isPending ||
-    closeTerminalsMutation.isPending ||
-    deleteWorkspaceMutation.isPending ||
-    renameMutation.isPending ||
+    release.pending ||
+    archiveWorkspaceAction.pending ||
+    closeTabs.pending ||
+    closeTerminals.pending ||
+    closeOneTerminalAction.pending ||
+    deleteWorkspaceAction.pending ||
+    rename.pending ||
+    archiveAgents.pending ||
+    restoreSession.pending ||
+    deleteAgentsAction.pending ||
     jobs.busy ||
     cooling;
 
-  const workspaceRows = workspaces.data?.workspaces ?? [];
-  const activeWorkspaces = useMemo(() => workspaceRows.filter((row) => !row.archivedAt), [workspaceRows]);
-  const archivedWorkspaces = useMemo(() => workspaceRows.filter((row) => row.archivedAt), [workspaceRows]);
+  const { styles, tones } = useMemo(() => buildStyles(theme, compact), [theme, compact]);
 
-  const terminalsByWorkspace = useMemo(() => {
-    const map = new Map<string, { count: number; busy: number; rssBytes: number }>();
-    for (const row of terminals.data?.workspaces ?? []) {
-      map.set(row.workspaceId, { count: row.count, busy: row.busy, rssBytes: row.rssBytes });
+  const ctx: ActionsContext = useMemo(
+    () => ({
+      busy,
+      workspaceRows,
+      projectRows,
+      agents: visibleAgents,
+      terminals: terminalsByWorkspace,
+      terminalList: workspaces.data?.terminalList ?? [],
+      closeTerminal: (terminalId) => closeOneTerminalAction.mutate([terminalId]),
+      canOpenAgent: typeof navigation?.openAgent === "function",
+      openWorkspace: (workspaceId) => navigation?.openWorkspace?.({ workspaceId }),
+      openAgent: (agentId) => navigation?.openAgent?.({ agentId }),
+      activate: (input) => {
+        setFeedback(null);
+        jobs.activate(input);
+      },
+      releaseAgents: release.mutate,
+      closeTabs: closeTabs.mutate,
+      closeTerminals: closeTerminals.mutate,
+      archiveWorkspace: archiveWorkspaceAction.mutate,
+      deleteWorkspace: deleteWorkspaceAction.mutate,
+      renameWorkspace: (workspaceId, title) => rename.mutate({ workspaceId, title }),
+      archiveAgents: archiveAgents.mutate,
+      restoreAgent: restoreSession.mutate,
+      deleteAgents: deleteAgentsAction.mutate,
+    }),
+    [
+      busy,
+      workspaceRows,
+      projectRows,
+      visibleAgents,
+      terminalsByWorkspace,
+      workspaces.data?.terminalList,
+      closeOneTerminalAction,
+      navigation,
+      jobs,
+      release,
+      closeTabs,
+      closeTerminals,
+      archiveWorkspaceAction,
+      deleteWorkspaceAction,
+      rename,
+      archiveAgents,
+      restoreSession,
+      deleteAgentsAction,
+    ],
+  );
+
+  const onSelect = useCallback(
+    (row: TreeRow) => {
+      setSelection(row);
+      if (compact) {
+        setDetailOpen(true);
+      }
+    },
+    [compact],
+  );
+
+  const onToggle = useCallback((row: TreeRow) => {
+    if (row.kind === "project" || row.kind === "orphan") {
+      setCollapsedProjects((current) => toggleSet(current, row.id, !row.expanded));
+      return;
     }
-    return map;
-  }, [terminals.data?.workspaces]);
-
-  const styles = useMemo(() => {
-    const palette = theme.colors;
-    const tones = buildTones({
-      surface0: palette.surface0,
-      accent: palette.accent,
-      statusSuccess: palette.statusSuccess,
-      statusWarning: palette.statusWarning,
-      statusDanger: palette.statusDanger,
-    });
-    return {
-      screen: { flex: 1, backgroundColor: palette.surface0, padding: compact ? 14 : 20 },
-      headline: { color: palette.foreground, fontSize: compact ? 15 : 16, fontWeight: "600" as const },
-      subline: { color: palette.foregroundMuted, fontSize: 12, flexShrink: 1, lineHeight: 17 },
-      toolbar: { flexDirection: "row" as const, flexWrap: "wrap" as const, gap: 8, marginTop: 14 },
-      sectionRow: {
-        flexDirection: "row" as const,
-        alignItems: "center" as const,
-        gap: 8,
-        marginTop: 22,
-        marginBottom: 8,
-      },
-      sectionLabel: {
-        fontSize: 11,
-        fontWeight: "600" as const,
-        letterSpacing: 0.6,
-      },
-      sectionLabelActive: { color: tones.accent },
-      sectionLabelArchived: { color: palette.foregroundMuted },
-      sectionRule: { flex: 1, height: 1, backgroundColor: palette.border },
-      wsCard: {
-        position: "relative" as const,
-        gap: 4,
-        padding: compact ? 12 : 10,
-        marginBottom: 10,
-        borderRadius: 10,
-        borderWidth: 1,
-        borderColor: palette.border,
-        backgroundColor: palette.surface1,
-        overflow: "hidden" as const,
-      },
-      wsCardArchived: { backgroundColor: palette.surface0 },
-      wsStripe: { position: "absolute" as const, left: 0, top: 0, bottom: 0, width: 3 },
-      wsStripeActive: { backgroundColor: tones.accent },
-      wsStripeArchived: { backgroundColor: palette.foregroundMuted, opacity: 0.45 },
-      wsName: { color: palette.foreground, fontSize: 14, fontWeight: "600" as const },
-      wsFacts: { color: palette.foregroundMuted, fontSize: 12, lineHeight: 17 },
-      factAccent: { color: tones.accent, fontWeight: "600" as const },
-      factOk: { color: tones.ok },
-      factWarn: { color: tones.warn },
-      hero: {
-        borderRadius: 10,
-        borderWidth: 1,
-        borderColor: palette.border,
-        backgroundColor: palette.surface1,
-        padding: compact ? 10 : 12,
-        gap: 8,
-      },
-      heroTop: {
-        flexDirection: "row" as const,
-        alignItems: "baseline" as const,
-        justifyContent: "space-between" as const,
-        gap: 8,
-      },
-      wsNameArchived: { color: palette.foregroundMuted },
-      wsMeta: { color: palette.foregroundMuted, fontSize: 12, lineHeight: 17 },
-      actions: { flexDirection: "row" as const, flexWrap: "wrap" as const, gap: 8, marginTop: 8 },
-      button: {
-        minHeight: 34,
-        justifyContent: "center" as const,
-        alignItems: "center" as const,
-        paddingHorizontal: 12,
-        borderRadius: 8,
-        backgroundColor: "transparent",
-        borderWidth: 1,
-        borderColor: palette.border,
-      },
-      buttonPrimary: { backgroundColor: tones.accent, borderColor: tones.accent },
-      buttonDanger: { backgroundColor: tones.danger, borderColor: tones.danger },
-      buttonHalf: { flexBasis: "48%" as const, flexGrow: 1 },
-      buttonText: { color: palette.foreground, fontSize: 12 },
-      buttonTextOn: { color: tones.onAccent, fontSize: 12 },
-      disabled: { opacity: 0.45 },
-      confirm: {
-        borderWidth: 1,
-        borderColor: tones.danger,
-        borderRadius: 10,
-        backgroundColor: palette.surface2,
-        padding: 10,
-        gap: 8,
-        marginTop: 8,
-      },
-      confirmText: { color: palette.foreground, fontSize: 12, lineHeight: 17 },
-      autoPanel: {
-        borderWidth: 1,
-        borderColor: palette.border,
-        borderRadius: 10,
-        backgroundColor: palette.surface1,
-        padding: compact ? 10 : 12,
-        gap: 10,
-        marginBottom: 14,
-      },
-      autoRow: {
-        flexDirection: compact ? ("column" as const) : ("row" as const),
-        alignItems: compact ? ("stretch" as const) : ("center" as const),
-        justifyContent: "space-between" as const,
-        gap: compact ? 6 : 12,
-      },
-      autoLabel: { color: palette.foreground, fontSize: 12, flexShrink: 1 },
-      autoDivider: { height: 1, backgroundColor: palette.border, opacity: 0.6 },
-      autoStatus: { color: palette.foregroundMuted, fontSize: 11, lineHeight: 16 },
-      autoStatusWarn: { color: tones.danger, fontSize: 11, lineHeight: 16 },
-      segment: {
-        flexDirection: "row" as const,
-        alignSelf: compact ? ("stretch" as const) : ("auto" as const),
-        borderRadius: 8,
-        borderWidth: 1,
-        borderColor: palette.border,
-        overflow: "hidden" as const,
-      },
-      segmentItem: {
-        flexGrow: 1,
-        minHeight: 30,
-        paddingHorizontal: compact ? 6 : 12,
-        justifyContent: "center" as const,
-        alignItems: "center" as const,
-        borderLeftWidth: 1,
-        borderLeftColor: palette.border,
-      },
-      segmentItemFirst: { borderLeftWidth: 0 },
-      segmentItemActive: { backgroundColor: tones.accent },
-      segmentText: { color: palette.foregroundMuted, fontSize: 12 },
-      segmentTextActive: { color: tones.onAccent, fontSize: 12, fontWeight: "600" as const },
-      chip: {
-        minHeight: 30,
-        paddingHorizontal: 12,
-        justifyContent: "center" as const,
-        alignItems: "center" as const,
-        borderRadius: 8,
-        borderWidth: 1,
-        borderColor: palette.border,
-        backgroundColor: palette.surface1,
-      },
-      chipOn: { backgroundColor: tones.accent, borderColor: tones.accent },
-      chipText: { color: palette.foreground, fontSize: 12 },
-      chipTextOn: { color: tones.onAccent, fontSize: 12, fontWeight: "600" as const },
-      renamePanel: {
-        borderWidth: 1,
-        borderColor: tones.accent,
-        borderRadius: 8,
-        padding: 10,
-        gap: 8,
-        marginTop: 8,
-      },
-      renameInput: {
-        minHeight: 36,
-        borderRadius: 8,
-        borderWidth: 1,
-        borderColor: palette.border,
-        backgroundColor: palette.surface2,
-        color: palette.foreground,
-        paddingHorizontal: 10,
-        fontSize: 13,
-      },
-      warning: { color: tones.warn, fontSize: 12, marginTop: 10, lineHeight: 17 },
-      empty: { color: palette.foregroundMuted, fontSize: 13, paddingVertical: 20 },
-      footer: {
-        color: palette.foreground,
-        fontSize: 11,
-        lineHeight: 16,
-        marginTop: 12,
-        padding: 10,
-        borderRadius: 8,
-        borderWidth: 1,
-        borderColor: palette.border,
-        backgroundColor: palette.surface1,
-      },
-      jobRow: { marginTop: 10 },
-    };
-  }, [theme, compact]);
+    if (row.kind === "workspace") {
+      setExpandedWorkspaces((current) => toggleSet(current, row.id, row.expanded));
+    }
+  }, []);
 
   if (workspaces.isLoading && !workspaces.data) {
     return (
       <View style={styles.screen}>
-        <ActivityIndicator color={theme.colors.accent} />
+        <ActivityIndicator color={tones.accent} />
       </View>
     );
   }
@@ -445,427 +354,443 @@ export function AgentManagerPanel({ theme, host, layout }: PluginSurfaceProps) {
     );
   }
 
-  const renderWorkspace = (row: WorkspaceRow, archived: boolean) => {
-    const stats = workspaceStats(overview.data?.agents, row.workspaceId);
-    const label = workspaceLabel(row);
-    const lastActive = !archived && isLastActiveAtPath(workspaceRows, row);
-    const candidate = lastActive ? reopenCandidate(workspaceRows, row) : null;
-    const alsoActive = archived
-      ? []
-      : activeAtPath(workspaceRows, row).filter((entry) => entry.workspaceId !== row.workspaceId);
-    const terminalInfo = terminalsByWorkspace.get(row.workspaceId);
-    const isRenaming = renaming === row.workspaceId;
-    const facts: Array<{ text: string; tone: "quiet" | "accent" | "ok" | "warn" }> = [];
-    if (stats.holding > 0) {
-      facts.push({ text: `${stats.holding} holding · ${formatBytes(stats.rssBytes)}`, tone: "accent" });
-    }
-    facts.push({ text: `${stats.total} session${stats.total === 1 ? "" : "s"}`, tone: "quiet" });
-    if (stats.running > 0) {
-      facts.push({ text: `${stats.running} running`, tone: "ok" });
-    }
-    if (terminalInfo && terminalInfo.count > 0) {
-      facts.push({
-        text: `${terminalInfo.count} terminal${terminalInfo.count === 1 ? "" : "s"} · ${formatBytes(terminalInfo.rssBytes)}`,
-        tone: terminalInfo.busy > 0 ? "warn" : "quiet",
-      });
-    }
-    if (row.kind !== "directory") {
-      facts.push({ text: row.kind, tone: "quiet" });
-    }
-    facts.push({ text: row.projectName ?? "project removed", tone: "quiet" });
-    if (alsoActive.length > 0) {
-      facts.push({ text: `+${alsoActive.length} active here`, tone: "quiet" });
-    }
-    if (archived && row.archivedAt) {
-      facts.push({ text: `archived ${formatTime(row.archivedAt)}`, tone: "quiet" });
-    }
-
-    return (
-      <View key={row.workspaceId} style={[styles.wsCard, archived ? styles.wsCardArchived : null]}>
-        <View style={[styles.wsStripe, archived ? styles.wsStripeArchived : styles.wsStripeActive]} />
-        <Text style={[styles.wsName, archived ? styles.wsNameArchived : null]} numberOfLines={1}>
-          {label}
-        </Text>
-        <Text style={styles.wsMeta} numberOfLines={1}>
-          {row.cwd}
-        </Text>
-        <Text style={styles.wsFacts} numberOfLines={2}>
-          {facts.map((fact, index) => (
-            <Text key={fact.text} style={factStyles(fact.tone, styles)}>
-              {index === 0 ? fact.text : ` · ${fact.text}`}
-            </Text>
-          ))}
-        </Text>
-
-        {archived ? (
-          <View style={styles.actions}>
-            <Pressable
-              accessibilityRole="button"
-              disabled={busy}
-              style={[
-                styles.button,
-                styles.buttonPrimary,
-                compact ? styles.buttonHalf : null,
-                busy ? styles.disabled : null,
-              ]}
-              onPress={() => {
-                setFeedback(null);
-                jobs.activate({ workspaceId: row.workspaceId, workspaceName: label });
-              }}
-            >
-              <Text style={styles.buttonTextOn}>Activate</Text>
-            </Pressable>
-            <Pressable
-              accessibilityRole="button"
-              disabled={busy}
-              style={[styles.button, styles.buttonDanger, compact ? styles.buttonHalf : null, busy ? styles.disabled : null]}
-              onPress={() => {
-                setPendingArchive(null);
-                setPendingWorkspaceDelete(row.workspaceId);
-              }}
-            >
-              <Text style={styles.buttonTextOn}>Delete</Text>
-            </Pressable>
-            <Pressable
-              accessibilityRole="button"
-              disabled={busy}
-              style={[styles.button, compact ? styles.buttonHalf : null, busy ? styles.disabled : null]}
-              onPress={() => {
-                setFeedback(null);
-                setPendingArchive(null);
-                setRenaming(isRenaming ? null : row.workspaceId);
-                setRenameValue(row.name ?? "");
-              }}
-            >
-              <Text style={styles.buttonText}>Rename…</Text>
-            </Pressable>
-          </View>
-        ) : (
-          <View style={styles.actions}>
-            <Pressable
-              accessibilityRole="button"
-              disabled={busy || stats.holding === 0}
-              style={[
-                styles.button,
-                styles.buttonPrimary,
-                compact ? styles.buttonHalf : null,
-                busy || stats.holding === 0 ? styles.disabled : null,
-              ]}
-              onPress={() => {
-                setFeedback(null);
-                releaseWorkspace.mutate(row.workspaceId);
-              }}
-            >
-              <Text style={styles.buttonTextOn}>Release ({stats.holding})</Text>
-            </Pressable>
-            <Pressable
-              accessibilityRole="button"
-              disabled={busy || stats.archived === 0}
-              style={[
-                styles.button,
-                compact ? styles.buttonHalf : null,
-                busy || stats.archived === 0 ? styles.disabled : null,
-              ]}
-              onPress={() => {
-                setFeedback(null);
-                jobs.activate({ workspaceId: row.workspaceId, workspaceName: label, tabsOnly: true });
-              }}
-            >
-              <Text style={styles.buttonText}>Reopen ({stats.archived})</Text>
-            </Pressable>
-            <Pressable
-              accessibilityRole="button"
-              disabled={busy || stats.open === 0}
-              style={[
-                styles.button,
-                compact ? styles.buttonHalf : null,
-                busy || stats.open === 0 ? styles.disabled : null,
-              ]}
-              onPress={() => {
-                setFeedback(null);
-                closeTabsMutation.mutate(row.workspaceId);
-              }}
-            >
-              <Text style={styles.buttonText}>Tabs ({stats.open})</Text>
-            </Pressable>
-            <Pressable
-              accessibilityRole="button"
-              disabled={busy || (terminalInfo?.count ?? 0) === 0}
-              style={[
-                styles.button,
-                compact ? styles.buttonHalf : null,
-                busy || (terminalInfo?.count ?? 0) === 0 ? styles.disabled : null,
-              ]}
-              onPress={() => {
-                if ((terminalInfo?.busy ?? 0) > 0) {
-                  setPendingTerminals(row.workspaceId);
-                  return;
-                }
-                setFeedback(null);
-                closeTerminalsMutation.mutate(row.workspaceId);
-              }}
-            >
-              <Text style={styles.buttonText}>Terminals ({terminalInfo?.count ?? 0})</Text>
-            </Pressable>
-            <Pressable
-              accessibilityRole="button"
-              disabled={busy}
-              style={[styles.button, compact ? styles.buttonHalf : null, busy ? styles.disabled : null]}
-              onPress={() => {
-                setFeedback(null);
-                setRenaming(null);
-                if (stats.total === 0) {
-                  archiveWorkspaceMutation.mutate({ workspaceId: row.workspaceId, confirmLastActive: true });
-                  return;
-                }
-                setPendingWorkspaceDelete(null);
-                setPendingArchive(row.workspaceId);
-              }}
-            >
-              <Text style={styles.buttonText}>Archive</Text>
-            </Pressable>
-            <Pressable
-              accessibilityRole="button"
-              disabled={busy}
-              style={[styles.button, compact ? styles.buttonHalf : null, busy ? styles.disabled : null]}
-              onPress={() => {
-                setFeedback(null);
-                setPendingArchive(null);
-                setRenaming(isRenaming ? null : row.workspaceId);
-                setRenameValue(row.name ?? "");
-              }}
-            >
-              <Text style={styles.buttonText}>Rename…</Text>
-            </Pressable>
-          </View>
-        )}
-
-        {pendingArchive === row.workspaceId ? (
-          <View style={styles.confirm}>
-            <Text style={styles.confirmText}>
-              {stats.total === 0
-                ? `Archive "${label}"? It has no sessions, so Paseo removes the workspace record.`
-                : `Archive "${label}"? ${stats.total} session(s) stop now${
-                    stats.running > 0 ? ` (${stats.running} running)` : ""
-                  }.`}
-            </Text>
-            {lastActive ? (
-              <Text style={styles.confirmText}>
-                Only active workspace at this path — Paseo reopens "{candidate ? workspaceLabel(candidate) : "an archived one"}
-                " here next time.
-              </Text>
-            ) : null}
-            <Text style={styles.wsMeta}>Tabs closes them without archiving, which frees the same memory.</Text>
-            <View style={styles.actions}>
-              <Pressable
-                accessibilityRole="button"
-                disabled={busy}
-                style={[
-                  styles.button,
-                  styles.buttonDanger,
-                  compact ? styles.buttonHalf : null,
-                  busy ? styles.disabled : null,
-                ]}
-                onPress={() => archiveWorkspaceMutation.mutate({ workspaceId: row.workspaceId, confirmLastActive: true })}
-              >
-                <Text style={styles.buttonTextOn}>Confirm archive</Text>
-              </Pressable>
-              <Pressable
-                accessibilityRole="button"
-                style={[styles.button, compact ? styles.buttonHalf : null]}
-                onPress={() => setPendingArchive(null)}
-              >
-                <Text style={styles.buttonText}>Cancel</Text>
-              </Pressable>
-            </View>
-          </View>
-        ) : null}
-
-        {pendingTerminals === row.workspaceId ? (
-          <View style={styles.confirm}>
-            <Text style={styles.confirmText}>
-              Close {terminalInfo?.count ?? 0} terminal(s) in "{label}"? {terminalInfo?.busy ?? 0} are running a command —
-              it stops.
-            </Text>
-            <View style={styles.actions}>
-              <Pressable
-                accessibilityRole="button"
-                disabled={busy}
-                style={[
-                  styles.button,
-                  styles.buttonDanger,
-                  compact ? styles.buttonHalf : null,
-                  busy ? styles.disabled : null,
-                ]}
-                onPress={() => closeTerminalsMutation.mutate(row.workspaceId)}
-              >
-                <Text style={styles.buttonTextOn}>Confirm close</Text>
-              </Pressable>
-              <Pressable
-                accessibilityRole="button"
-                style={[styles.button, compact ? styles.buttonHalf : null]}
-                onPress={() => setPendingTerminals(null)}
-              >
-                <Text style={styles.buttonText}>Cancel</Text>
-              </Pressable>
-            </View>
-          </View>
-        ) : null}
-
-        {pendingWorkspaceDelete === row.workspaceId ? (
-          <View style={styles.confirm}>
-            <Text style={styles.confirmText}>
-              Delete "{label}" permanently? {stats.total} session(s) and their history are removed.
-            </Text>
-            <View style={styles.actions}>
-              <Pressable
-                accessibilityRole="button"
-                disabled={busy}
-                style={[
-                  styles.button,
-                  styles.buttonDanger,
-                  compact ? styles.buttonHalf : null,
-                  busy ? styles.disabled : null,
-                ]}
-                onPress={() => deleteWorkspaceMutation.mutate(row.workspaceId)}
-              >
-                <Text style={styles.buttonTextOn}>Confirm delete</Text>
-              </Pressable>
-              <Pressable
-                accessibilityRole="button"
-                style={[styles.button, compact ? styles.buttonHalf : null]}
-                onPress={() => setPendingWorkspaceDelete(null)}
-              >
-                <Text style={styles.buttonText}>Cancel</Text>
-              </Pressable>
-            </View>
-          </View>
-        ) : null}
-
-        {isRenaming ? (
-          <View style={styles.renamePanel}>
-            <TextInput
-              autoFocus
-              value={renameValue}
-              onChangeText={setRenameValue}
-              onSubmitEditing={() =>
-                renameMutation.mutate({ workspaceId: row.workspaceId, title: renameValue })
-              }
-              placeholder="Workspace name"
-              placeholderTextColor={theme.colors.foregroundMuted}
-              returnKeyType="done"
-              style={styles.renameInput}
-            />
-            <Text style={styles.wsMeta}>
-              Saved on the daemon, archived or not. Clear the field to fall back to the directory name.
-            </Text>
-            <View style={styles.actions}>
-              <Pressable
-                accessibilityRole="button"
-                disabled={busy}
-                style={[
-                  styles.button,
-                  styles.buttonPrimary,
-                  compact ? styles.buttonHalf : null,
-                  busy ? styles.disabled : null,
-                ]}
-                onPress={() => renameMutation.mutate({ workspaceId: row.workspaceId, title: renameValue })}
-              >
-                <Text style={styles.buttonTextOn}>Save name</Text>
-              </Pressable>
-              <Pressable
-                accessibilityRole="button"
-                style={[styles.button, compact ? styles.buttonHalf : null]}
-                onPress={() => setRenaming(null)}
-              >
-                <Text style={styles.buttonText}>Cancel</Text>
-              </Pressable>
-            </View>
-          </View>
-        ) : null}
-      </View>
-    );
-  };
+  const activeCount = workspaceRows.filter((row) => row.archivedAt === null).length;
+  const archivedCount = recordRows.filter((row) => row.archived).length;
+  const unarchivedCount = recordRows.length - archivedCount;
+  const noRuntimeCount = recordRows.filter((row) => !row.archived && row.status === "closed").length;
 
   return (
     <View style={styles.screen}>
       <View style={styles.hero}>
         <Text style={styles.headline} numberOfLines={1}>
-          {workspaceRows.length} workspace{workspaceRows.length === 1 ? "" : "s"} · {activeWorkspaces.length} active ·{" "}
-          {archivedWorkspaces.length} archived
+          {workspaceRows.length} workspace{workspaceRows.length === 1 ? "" : "s"} · {activeCount} active
         </Text>
+
         <Text style={styles.subline} numberOfLines={2}>
-          {host.label} · {overview.data?.totals.total ?? 0} sessions ·{" "}
-          <Text
-            style={(overview.data?.totals.holdingProcess ?? 0) > 0 ? styles.factAccent : undefined}
-          >
-            {overview.data?.totals.holdingProcess ?? 0} holding · {formatBytes(overview.data?.totals.rssBytes ?? 0)}
+          {host.label} · {recordRows.length} records ·{" "}
+          <Text style={styles.factAccent}>
+            {unarchivedCount} unarchived
+            {noRuntimeCount > 0 ? ` (${noRuntimeCount} no runtime)` : ""}
           </Text>
+          {archivedCount > 0 ? ` · ${archivedCount} archived` : ""}
         </Text>
+
         <Text style={styles.subline} numberOfLines={2}>
-          {systemParts(system.data).map((part, index) => (
+          <Text style={(workspaces.data?.overview.totals.holdingProcess ?? 0) > 0 ? styles.factAccent : undefined}>
+            {workspaces.data?.overview.totals.holdingProcess ?? 0} holding ·{" "}
+            {formatBytes(workspaces.data?.overview.totals.rssBytes ?? 0)}
+          </Text>
+          {systemParts(systemStats).map((part) => (
             <Text key={part.text} style={part.warn ? styles.factWarn : undefined}>
-              {index === 0 ? part.text : ` · ${part.text}`}
+              {` · ${part.text}`}
             </Text>
           ))}
         </Text>
-      </View>
 
-      <View style={styles.toolbar}>
-        <Pressable
-          accessibilityRole="button"
-          disabled={busy || idleAgents.length === 0}
-          style={[
-            styles.button,
-            styles.buttonPrimary,
-            compact ? styles.buttonHalf : null,
-            busy || idleAgents.length === 0 ? styles.disabled : null,
-          ]}
-          onPress={() => {
-            setFeedback(null);
-            releaseIdle.mutate();
-          }}
-        >
-          <Text style={styles.buttonTextOn}>Release idle ({idleAgents.length})</Text>
-        </Pressable>
-        <Pressable
-          accessibilityRole="button"
-          style={[styles.button, compact ? styles.buttonHalf : null]}
-          onPress={() => void refreshAll()}
-        >
-          <Text style={styles.buttonText}>
-            {workspaces.isFetching || overview.isFetching ? "Refreshing…" : "Refresh"}
+        <View style={styles.heroActions}>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityState={{ expanded: settingsOpen }}
+            onPress={() => setSettingsOpen((value) => !value)}
+            style={[styles.chip, settingsOpen ? styles.chipOn : null]}
+          >
+            <View style={styles.heroSettingsLabel}>
+              <View
+                style={[
+                  styles.dot,
+                  autoRelease?.lastError
+                    ? styles.dotWarn
+                    : autoRelease?.enabled
+                      ? styles.dotOk
+                      : styles.dotMuted,
+                ]}
+              />
+              <Text style={settingsOpen ? styles.chipTextOn : styles.chipText}>
+                Settings {settingsOpen ? "▼" : "▶"}
+              </Text>
+            </View>
+          </Pressable>
+          <Text style={styles.heroSettingsHint} numberOfLines={1}>
+            {settingsSummary(autoRelease)}
           </Text>
-        </Pressable>
+          <View style={styles.heroButtons}>
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => {
+                setFeedback(null);
+                void refresh();
+              }}
+              style={[
+                styles.button,
+                styles.buttonSmall,
+                compact ? styles.buttonHalf : null,
+                workspaces.isFetching ? styles.disabled : null,
+              ]}
+            >
+              <Text style={styles.buttonText}>{workspaces.isFetching ? "Refreshing…" : "Refresh"}</Text>
+            </Pressable>
+            <Pressable
+              accessibilityRole="button"
+              disabled={busy || idleAgents.length === 0}
+              style={[
+                styles.button,
+                styles.buttonSmall,
+                styles.buttonPrimary,
+                compact ? styles.buttonHalf : null,
+                busy || idleAgents.length === 0 ? styles.disabled : null,
+              ]}
+              onPress={() => {
+                setFeedback(null);
+                release.mutate(idleAgents.map((row) => row.id));
+              }}
+            >
+              <Text style={styles.buttonTextOn}>Release idle ({idleAgents.length})</Text>
+            </Pressable>
+          </View>
+        </View>
+
+        {settingsOpen ? (
+          <SettingsSection
+            state={autoRelease}
+            pending={autoReleaseSave.isPending}
+            onPatch={(patch) => autoReleaseSave.mutate(patch)}
+            styles={styles}
+            compact={compact}
+            scope={scope}
+            onScope={setScope}
+            unarchivedCount={unarchivedCount}
+            recordCount={recordRows.length}
+          />
+        ) : null}
       </View>
 
-      <ScrollView>
-        {renderAutoRelease(autoRelease.data, autoReleaseMutation, styles, compact)}
-        <View style={styles.sectionRow}>
-          <View style={[styles.dot, styles.dotAccent]} />
-          <Text style={[styles.sectionLabel, styles.sectionLabelActive]}>ACTIVE · {activeWorkspaces.length}</Text>
-          <View style={styles.sectionRule} />
-        </View>
-        {activeWorkspaces.map((row) => renderWorkspace(row, false))}
-        {activeWorkspaces.length === 0 ? <Text style={styles.empty}>No active workspace.</Text> : null}
+      <View style={styles.body}>
+        {!compact || !detailOpen ? (
+          <View style={compact ? styles.pane : styles.paneTree}>
+            <TreePane
+              rows={rows}
+              selectedKey={selection?.key ?? null}
+              onSelect={onSelect}
+              onToggle={onToggle}
+              styles={styles}
+              compact={compact}
+              emptyText="No workspace on this host."
+            />
+          </View>
+        ) : null}
 
-        <View style={styles.sectionRow}>
-          <View style={[styles.dot, styles.dotMuted]} />
-          <Text style={[styles.sectionLabel, styles.sectionLabelArchived]}>ARCHIVED · {archivedWorkspaces.length}</Text>
-          <View style={styles.sectionRule} />
-        </View>
-        {archivedWorkspaces.map((row) => renderWorkspace(row, true))}
-        {archivedWorkspaces.length === 0 ? <Text style={styles.empty}>No archived workspace.</Text> : null}
-      </ScrollView>
-
-      <View style={styles.jobRow}>
-        <JobLine job={jobs.job} error={jobs.error} busy={jobs.busy} theme={theme} />
+        {!compact || detailOpen ? (
+          <View style={styles.pane}>
+            <ActionsPane
+              selection={selection}
+              ctx={ctx}
+              styles={styles}
+              compact={compact}
+              showBack={compact}
+              onBack={() => setDetailOpen(false)}
+            />
+          </View>
+        ) : null}
       </View>
 
-      {overview.data?.warning ? <Text style={styles.warning}>{overview.data.warning}</Text> : null}
-      {feedback ? <Text style={styles.footer}>{feedback}</Text> : null}
+      <View style={styles.footerRow}>
+        <View style={styles.jobRow}>
+          <JobLine job={jobs.job} error={jobs.error} busy={jobs.busy} theme={theme} />
+        </View>
+        {workspaces.data?.overview.warning ? (
+          <Text style={styles.warning}>{workspaces.data.overview.warning}</Text>
+        ) : null}
+        {feedback ? <Text style={styles.footer}>{feedback}</Text> : null}
+      </View>
     </View>
   );
+}
+
+function useAction<TInput, TResult>(
+  run: (input: TInput) => Promise<TResult>,
+  describeResult: (result: TResult, input: TInput) => string | null,
+  deps: unknown[],
+  hooks: {
+    refresh: () => Promise<void>;
+    coolDown: () => void;
+    report: (text: string | null) => void;
+    after?: (result: TResult, input: TInput) => void;
+  },
+) {
+  const mutation = useMutation({
+    mutationFn: (input: TInput) => run(input),
+    onSuccess: async (result, input) => {
+      hooks.after?.(result, input);
+      hooks.report(describeResult(result, input));
+      hooks.coolDown();
+      await hooks.refresh();
+    },
+    onError: (error) => hooks.report(`Failed: ${message(error)}`),
+  });
+  const mutate = useCallback(
+    (input: TInput) => {
+      hooks.report(null);
+      mutation.mutate(input);
+    },
+    [mutation.mutate],
+  );
+  return { mutate, pending: mutation.isPending };
+}
+
+function buildRows(
+  workspaceRows: WorkspaceRow[],
+  projectRows: ProjectRow[],
+  agents: AgentRow[],
+  collapsedProjects: Set<string>,
+  expandedWorkspaces: Set<string>,
+  terminals: Map<string, TerminalInfo>,
+): TreeRow[] {
+  const rows: TreeRow[] = [];
+  const byProject = new Map<string, WorkspaceRow[]>();
+  for (const row of workspaceRows) {
+    const list = byProject.get(row.projectId);
+    if (list) {
+      list.push(row);
+    } else {
+      byProject.set(row.projectId, [row]);
+    }
+  }
+
+  const groups = [...byProject.entries()].map(([projectId, list]) => {
+    const project = projectRows.find((entry) => entry.projectId === projectId) ?? null;
+    return {
+      projectId,
+      name: project?.name ?? list.find((row) => row.projectName)?.projectName ?? "project removed",
+      rootPath: project?.rootPath ?? list.find((row) => row.projectRoot)?.projectRoot ?? null,
+      workspaces: [...list].sort(compareWorkspaces),
+    };
+  });
+  groups.sort((left, right) => left.name.localeCompare(right.name));
+
+  for (const group of groups) {
+    const collapsed = collapsedProjects.has(group.projectId);
+    const scoped = agents.filter((agent) =>
+      group.workspaces.some((row) => row.workspaceId === agent.workspaceId),
+    );
+    const holding = scoped.filter((agent) => agent.pid !== null);
+    const running = scoped.filter((agent) => agent.status === "running").length;
+    const archivedAgents = scoped.filter((agent) => agent.archived).length;
+    const noRuntime = scoped.filter((agent) => !agent.archived && agent.status === "closed").length;
+
+    rows.push({
+      key: `project:${group.projectId}`,
+      kind: "project",
+      id: group.projectId,
+      workspaceId: null,
+      label: group.name,
+      sub: group.rootPath,
+      facts: [
+        {
+          text: `${scoped.length - archivedAgents} unarchived${noRuntime > 0 ? ` (${noRuntime} no runtime)` : ""}`,
+          tone: "quiet",
+        },
+        ...(archivedAgents > 0 ? [{ text: `${archivedAgents} archived`, tone: "quiet" as FactTone }] : []),
+        ...(holding.length > 0
+          ? [
+              {
+                text: `${holding.length} holding · ${formatBytes(holding.reduce((sum, agent) => sum + (agent.rssBytes ?? 0), 0))}`,
+                tone: "accent" as FactTone,
+              },
+            ]
+          : []),
+        ...(running > 0 ? [{ text: `${running} running`, tone: "ok" as FactTone }] : []),
+      ],
+      depth: 0,
+      expandable: true,
+      expanded: !collapsed,
+      archived: group.workspaces.every((row) => row.archivedAt !== null),
+      status: running > 0 ? "running" : holding.length > 0 ? "idle" : null,
+      count: group.workspaces.length,
+    });
+
+    if (collapsed) {
+      continue;
+    }
+
+    for (const workspace of group.workspaces) {
+      const stats = workspaceStats(agents, workspace.workspaceId);
+      const facts: Array<{ text: string; tone: FactTone }> = [
+        { text: workspace.branch ?? workspace.kind, tone: "quiet" },
+      ];
+      if (stats.holding > 0) {
+        facts.push({ text: `${stats.holding} holding · ${formatBytes(stats.rssBytes)}`, tone: "accent" });
+      }
+      facts.push({
+        text: `${stats.open} unarchived${stats.noRuntime > 0 ? ` (${stats.noRuntime} no runtime)` : ""}`,
+        tone: "quiet",
+      });
+      if (stats.archived > 0) {
+        facts.push({ text: `${stats.archived} archived`, tone: "quiet" });
+      }
+      const terminal = terminals.get(workspace.workspaceId);
+      if ((terminal?.count ?? 0) > 0) {
+        const busy = terminal?.working ?? 0;
+        facts.push({
+          text: `${terminal?.count ?? 0} terminal${(terminal?.count ?? 0) === 1 ? "" : "s"}${busy > 0 ? ` (${busy} working)` : ""} · ${formatBytes(terminal?.rssBytes ?? 0)}`,
+          tone: busy > 0 || (terminal?.busy ?? 0) > 0 ? "warn" : "quiet",
+        });
+      }
+      facts.push({ text: formatTime(workspace.createdAt), tone: "quiet" });
+      if (workspace.pinnedAt) {
+        facts.push({ text: "pinned", tone: "quiet" });
+      }
+      if (workspace.isPaseoOwnedWorktree) {
+        facts.push({ text: "worktree", tone: "quiet" });
+      }
+      if (workspace.autoArchivedChangeRequestUrl) {
+        facts.push({ text: "auto-archived by PR", tone: "quiet" });
+      }
+      if (workspace.archivedAt) {
+        facts.push({ text: `archived ${formatTime(workspace.archivedAt)}`, tone: "quiet" });
+      }
+
+      rows.push({
+        key: `workspace:${workspace.workspaceId}`,
+        kind: "workspace",
+        id: workspace.workspaceId,
+        workspaceId: workspace.workspaceId,
+        label: workspaceLabel(workspace),
+        sub: null,
+        facts,
+        depth: 1,
+        expandable: stats.open > 0,
+        expanded: expandedWorkspaces.has(workspace.workspaceId),
+        archived: workspace.archivedAt !== null,
+        status: stats.running > 0 ? "running" : stats.holding > 0 ? "idle" : "closed",
+        count: stats.open,
+      });
+
+      if (!expandedWorkspaces.has(workspace.workspaceId)) {
+        continue;
+      }
+
+      const scopedAgents = agents
+        .filter((agent) => agent.workspaceId === workspace.workspaceId)
+        .sort(compareAgents);
+      const ids = new Set(scopedAgents.map((agent) => agent.id));
+      for (const agent of scopedAgents) {
+        const isChild = agent.parentAgentId !== null && ids.has(agent.parentAgentId);
+        if (isChild) {
+          continue;
+        }
+        rows.push(agentRow(agent, 2));
+        for (const child of scopedAgents) {
+          if (child.parentAgentId === agent.id) {
+            rows.push(agentRow(child, 3));
+          }
+        }
+      }
+    }
+  }
+
+  const orphans = agents.filter((agent) => agent.workspaceId === null).sort(compareAgents);
+  if (orphans.length > 0) {
+    const collapsed = collapsedProjects.has("orphan");
+    rows.push({
+      key: "orphan:sessions",
+      kind: "orphan",
+      id: "orphan",
+      workspaceId: null,
+      label: "No workspace",
+      sub: null,
+      facts: [
+        { text: `${orphans.length} session${orphans.length === 1 ? "" : "s"}`, tone: "quiet" },
+        { text: "workspace record is gone", tone: "quiet" },
+      ],
+      depth: 0,
+      expandable: true,
+      expanded: !collapsed,
+      archived: orphans.every((agent) => agent.archived),
+      status: null,
+      count: orphans.length,
+    });
+    if (!collapsed) {
+      for (const agent of orphans) {
+        rows.push(agentRow(agent, 1));
+      }
+    }
+  }
+
+  return rows;
+}
+
+function agentRow(agent: AgentRow, depth: number): TreeRow {
+  const statusTone: FactTone =
+    agent.status === "running" ? "ok" : agent.status === "error" ? "danger" : agent.status === "closed" ? "quiet" : "accent";
+  const facts: Array<{ text: string; tone: FactTone }> = [
+    { text: statusWord(agent.status), tone: statusTone },
+    {
+      text: agent.pid === null ? formatTime(agent.updatedAt) : `${formatBytes(agent.rssBytes ?? 0)} · pid ${agent.pid}`,
+      tone: agent.pid === null ? "quiet" : "accent",
+    },
+  ];
+  if (agent.attentionReason) {
+    facts.push({ text: agent.attentionReason, tone: "warn" });
+  }
+  const labels = Object.entries(agent.labels);
+  if (labels.length > 0) {
+    facts.push({
+      text: labels.map(([key, value]) => (value ? `${key}=${value}` : key)).join(" "),
+      tone: "quiet",
+    });
+  }
+  if (agent.pid !== null) {
+    facts.push({ text: formatTime(agent.updatedAt), tone: "quiet" });
+  }
+  if (agent.archived) {
+    facts.push({ text: "archived", tone: "quiet" });
+  }
+  return {
+    key: `agent:${agent.id}`,
+    kind: "agent",
+    id: agent.id,
+    workspaceId: agent.workspaceId,
+    label: agent.parentAgentId ? `↳ ${agentTitle(agent)}` : agentTitle(agent),
+    sub: [agent.provider, agent.model].filter(Boolean).join(" · ") || null,
+    facts,
+    depth,
+    expandable: false,
+    expanded: false,
+    archived: agent.archived,
+    status: agent.status === "error" ? "error" : agent.status,
+    count: null,
+  };
+}
+
+function compareWorkspaces(left: WorkspaceRow, right: WorkspaceRow): number {
+  if ((left.archivedAt === null) !== (right.archivedAt === null)) {
+    return left.archivedAt === null ? -1 : 1;
+  }
+  return workspaceLabel(left).localeCompare(workspaceLabel(right));
+}
+
+function compareAgents(left: AgentRow, right: AgentRow): number {
+  if (left.archived !== right.archived) {
+    return left.archived ? 1 : -1;
+  }
+  if ((left.pid !== null) !== (right.pid !== null)) {
+    return left.pid !== null ? -1 : 1;
+  }
+  return agentTitle(left).localeCompare(agentTitle(right));
+}
+
+function findRow(rows: TreeRow[], kind: TreeKind, id: string): TreeRow | null {
+  return rows.find((row) => row.kind === kind && row.id === id) ?? null;
+}
+
+function toggleSet(current: Set<string>, key: string, on: boolean): Set<string> {
+  const next = new Set(current);
+  if (on) {
+    next.delete(key);
+  } else {
+    next.add(key);
+  }
+  return next;
 }
 
 interface SystemPart {
@@ -897,156 +822,6 @@ function systemParts(stats: SystemStats | undefined): SystemPart[] {
     });
   }
   return parts;
-}
-
-function factStyles(
-  tone: "quiet" | "accent" | "ok" | "warn",
-  styles: Record<string, any>,
-): Record<string, unknown> | undefined {
-  if (tone === "accent") return styles.factAccent;
-  if (tone === "ok") return styles.factOk;
-  if (tone === "warn") return styles.factWarn;
-  return undefined;
-}
-
-const IDLE_PRESETS = [5, 10, 15, 30, 60];
-const ON_LOAD_MODES: Array<{ id: AutoReleaseSnapshot["onLoad"]; label: string }> = [
-  { id: "threshold", label: "Respect timer" },
-  { id: "allIdle", label: "All idle" },
-  { id: "off", label: "Do nothing" },
-];
-
-function renderAutoRelease(
-  state: AutoReleaseSnapshot | undefined,
-  mutation: { mutate: (patch: Record<string, unknown>) => void; isPending: boolean },
-  styles: Record<string, any>,
-  compact: boolean,
-) {
-  if (!state) {
-    return null;
-  }
-  const pending = mutation.isPending;
-  const set = (patch: Record<string, unknown>) => mutation.mutate(patch);
-
-  const segmented = (
-    key: string,
-    options: readonly { id: string; label: string }[],
-    value: string,
-    onSelect: (id: string) => void,
-  ) => (
-    <View key={key} style={styles.segment}>
-      {options.map((option, index) => {
-        const active = option.id === value;
-        return (
-          <Pressable
-            key={option.id}
-            accessibilityRole="button"
-            disabled={pending}
-            style={[
-              styles.segmentItem,
-              index === 0 ? styles.segmentItemFirst : null,
-              active ? styles.segmentItemActive : null,
-              pending ? styles.disabled : null,
-            ]}
-            onPress={() => onSelect(option.id)}
-          >
-            <Text style={active ? styles.segmentTextActive : styles.segmentText} numberOfLines={1}>
-              {option.label}
-            </Text>
-          </Pressable>
-        );
-      })}
-    </View>
-  );
-
-  return (
-    <>
-      <View style={styles.sectionRow}>
-        <View
-          style={[
-            styles.dot,
-            state.lastError ? styles.dotWarn : state.enabled ? styles.dotOk : styles.dotMuted,
-          ]}
-        />
-        <Text style={[styles.sectionLabel, styles.sectionLabelActive]}>AUTO-RELEASE</Text>
-        <View style={styles.sectionRule} />
-        <Pressable
-          accessibilityRole="button"
-          disabled={pending}
-          style={[styles.chip, state.enabled ? styles.chipOn : null, pending ? styles.disabled : null]}
-          onPress={() => set({ enabled: !state.enabled })}
-        >
-          <Text style={state.enabled ? styles.chipTextOn : styles.chipText}>
-            {state.enabled ? "On" : "Off"}
-          </Text>
-        </Pressable>
-        <Pressable
-          accessibilityRole="button"
-          disabled={pending}
-          style={[styles.chip, pending ? styles.disabled : null]}
-          onPress={() => set({ runNow: true })}
-        >
-          <Text style={styles.chipText}>Run now</Text>
-        </Pressable>
-      </View>
-
-      <View style={styles.autoPanel}>
-        <View style={styles.autoRow}>
-          <Text style={styles.autoLabel}>Release idle after</Text>
-          {segmented(
-            "idle",
-            IDLE_PRESETS.map((minutes) => ({ id: `${minutes}`, label: `${minutes}m` })),
-            `${state.idleMinutes}`,
-            (id) => set({ idleMinutes: Number(id) }),
-          )}
-        </View>
-        <View style={styles.autoDivider} />
-        <View style={styles.autoRow}>
-          <Text style={styles.autoLabel}>After a reload</Text>
-          {segmented("load", ON_LOAD_MODES, state.onLoad, (id) => set({ onLoad: id }))}
-        </View>
-        <View style={styles.autoDivider} />
-        <View style={styles.autoRow}>
-          <Text style={styles.autoLabel}>Remove empty workspaces</Text>
-          {segmented(
-            "empty",
-            [
-              { id: "on", label: "On" },
-              { id: "off", label: "Off" },
-            ],
-            state.removeEmptyWorkspaces ? "on" : "off",
-            (id) => set({ removeEmptyWorkspaces: id === "on" }),
-          )}
-        </View>
-        <Text style={state.lastError ? styles.autoStatusWarn : styles.autoStatus} numberOfLines={2}>
-          {autoReleaseLine(state)}
-        </Text>
-      </View>
-    </>
-  );
-}
-
-function autoReleaseLine(state: AutoReleaseSnapshot): string {
-  const parts = [
-    state.lastRunAt ? `last sweep ${formatTime(state.lastRunAt)}` : "no sweep yet",
-    `${state.lastReleased.length} released`,
-    state.lastRemovedWorkspaces.length > 0 ? `${state.lastRemovedWorkspaces.length} empty workspace(s) removed` : null,
-    state.lastSkipped > 0 ? `${state.lastSkipped} waiting on you` : null,
-    state.nextRunAt ? `next ${formatCountdown(state.nextRunAt)}` : null,
-    state.lastError ? `error: ${state.lastError}` : null,
-  ].filter((part): part is string => Boolean(part));
-  return parts.join(" · ");
-}
-
-function formatCountdown(value: string): string {
-  const target = Date.parse(value);
-  if (!Number.isFinite(target)) {
-    return "—";
-  }
-  const minutes = Math.round((target - Date.now()) / 60000);
-  if (minutes <= 0) return "now";
-  if (minutes < 60) return `in ${minutes}m`;
-  return `in ${Math.round(minutes / 60)}h`;
 }
 
 function summarize(label: string, freed: string | null, failed: Array<{ agentId: string; error: string }>): string {

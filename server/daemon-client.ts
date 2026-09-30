@@ -50,6 +50,12 @@ export interface DaemonSessionClient {
   refreshAgent(agentId: string, requestId?: string): Promise<unknown>;
   closeItems(input: { agentIds: string[]; terminalIds: string[] }): Promise<unknown>;
   getDaemonStatus(options?: unknown): Promise<{ serverId?: unknown }>;
+  listTerminals(
+    cwd?: string,
+    requestId?: string,
+    options?: { workspaceId?: string },
+  ): Promise<{ terminals?: Array<Record<string, unknown>> }>;
+  killTerminal(terminalId: string, requestId?: string): Promise<unknown>;
 }
 
 let cachedServerId: string | null = null;

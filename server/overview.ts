@@ -1,30 +1,28 @@
-import type { AgentRow } from "../shared/contracts";
+import type { AgentRow, OverviewPayload } from "../shared/contracts";
 import { listAllAgents, type AgentLister } from "./agents";
 import { scanAgentProcesses } from "./processes";
-
-export interface OverviewResult {
-  agents: AgentRow[];
-  totals: {
-    total: number;
-    holdingProcess: number;
-    closed: number;
-    archived: number;
-    rssBytes: number;
-  };
-  warning: string | null;
-}
 
 export interface PaseoLike {
   agents: { list(options?: unknown): Promise<{ entries?: unknown; pageInfo?: unknown }> };
 }
 
-export async function buildOverview(paseo: PaseoLike): Promise<OverviewResult> {
+export async function buildOverview(paseo: PaseoLike): Promise<OverviewPayload> {
   const records = await listAllAgents(paseo.agents.list as unknown as AgentLister);
   const agents: AgentRow[] = records.map((record) => ({
     id: record.id,
+    title: record.title,
+    provider: record.provider,
+    model: record.model,
     status: record.status,
     archived: record.archivedAt !== null,
     workspaceId: record.workspaceId,
+    parentAgentId: record.parentAgentId,
+    attentionReason: record.attentionReason,
+    updatedAt: record.updatedAt,
+    createdAt: record.createdAt,
+    lastUserMessageAt: record.lastUserMessageAt,
+    labels: record.labels,
+    cwd: record.cwd,
     pid: null,
     rssBytes: null,
   }));

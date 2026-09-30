@@ -1,17 +1,10 @@
 import { useRpc } from "@getpaseo/plugin/client";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ActivityIndicator, Text, View } from "react-native";
 
 import { message } from "./format";
-import {
-  jobStatusRpc,
-  workspaceActivateRpc,
-  workspacesRpc,
-  type AgentRow,
-  type JobSnapshot,
-  type WorkspaceRow,
-} from "../shared/contracts";
+import { jobStatusRpc, workspaceActivateRpc, type AgentRow, type JobSnapshot, type WorkspaceRow } from "../shared/contracts";
 
 export interface WorkspaceStats {
   total: number;
@@ -20,6 +13,7 @@ export interface WorkspaceStats {
   holding: number;
   idle: number;
   running: number;
+  noRuntime: number;
   rssBytes: number;
 }
 
@@ -40,14 +34,6 @@ export interface WorkspaceJobs {
 const POLL_INTERVAL_MS = 600;
 
 const sharedJobs = new Map<string, string>();
-
-export function useWorkspaces(hostId: string) {
-  const list = useRpc(workspacesRpc);
-  return useQuery({
-    queryKey: ["agent-manager", "workspaces", hostId],
-    queryFn: () => list({}),
-  });
-}
 
 export function useWorkspaceJobs(hostId: string): WorkspaceJobs {
   const start = useRpc(workspaceActivateRpc);
@@ -135,7 +121,16 @@ export function useWorkspaceJobs(hostId: string): WorkspaceJobs {
 }
 
 export function workspaceStats(agents: readonly AgentRow[] | undefined, workspaceId: string): WorkspaceStats {
-  const stats: WorkspaceStats = { total: 0, archived: 0, open: 0, holding: 0, idle: 0, running: 0, rssBytes: 0 };
+  const stats: WorkspaceStats = {
+    total: 0,
+    archived: 0,
+    open: 0,
+    holding: 0,
+    idle: 0,
+    running: 0,
+    noRuntime: 0,
+    rssBytes: 0,
+  };
   for (const row of agents ?? []) {
     if (row.workspaceId !== workspaceId) {
       continue;
@@ -155,6 +150,9 @@ export function workspaceStats(agents: readonly AgentRow[] | undefined, workspac
     }
     if (row.status === "running") {
       stats.running += 1;
+    }
+    if (!row.archived && row.status === "closed") {
+      stats.noRuntime += 1;
     }
   }
   return stats;

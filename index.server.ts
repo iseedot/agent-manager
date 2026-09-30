@@ -1,14 +1,15 @@
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 
 import {
+  agentDeleteRpc,
+  agentRestoreRpc,
   autoReleaseSetRpc,
-  autoReleaseStateRpc,
   jobStatusRpc,
   overviewRpc,
   releaseManyRpc,
-  systemRpc,
+  snapshotRpc,
+  terminalCloseRpc,
   terminalsCloseRpc,
-  terminalsRpc,
   workspaceActivateRpc,
   workspaceArchiveRpc,
   workspaceCloseTabsRpc,
@@ -16,18 +17,20 @@ import {
   workspaceRenameRpc,
   workspacesRpc,
 } from "./shared/contracts";
-import { releaseAgents } from "./server/actions";
-import { readAutoReleaseState, startAutoReleaseScheduler, updateAutoReleaseState } from "./server/auto-release";
+import { releaseAgents, deleteAgents } from "./server/actions";
+import { restoreAgent } from "./server/agent-ops";
+import { startAutoReleaseScheduler, updateAutoReleaseState } from "./server/auto-release";
 import { disposeDaemonClient, resolveServerId } from "./server/daemon-client";
 import { installCrashGuards } from "./server/guard";
 import { paseoHome } from "./server/daemon-mcp";
 import { buildOverview, type PaseoLike } from "./server/overview";
-import { readSystemStats } from "./server/system";
-import { closeTerminals, listAllTerminals, summarizeTerminals, type TerminalKiller, type TerminalLister } from "./server/terminals";
+import { buildSnapshot } from "./server/snapshot";
+import { closeTerminals, listAllTerminals, type TerminalKiller, type TerminalLister } from "./server/terminals";
 import {
   archiveWorkspace,
   closeWorkspaceTabs,
   deleteWorkspace,
+  listProjectRows,
   listWorkspaceRows,
   readJob,
   renameWorkspace,
@@ -40,17 +43,29 @@ export default function contribute(server: PluginServerContext) {
 
   server.handle(overviewRpc, async (_input, { paseo }) => buildOverview(paseo as unknown as never));
 
+  server.handle(snapshotRpc, async (_input, { paseo }) => buildSnapshot(paseo as unknown as PaseoLike));
+
   server.handle(releaseManyRpc, async ({ agentIds, allowSignalFallback }) =>
     releaseAgents(agentIds, { allowSignalFallback: allowSignalFallback !== false }),
   );
 
-  server.handle(systemRpc, async () => readSystemStats());
+  server.handle(agentDeleteRpc, async ({ agentIds }) => {
+    const outcome = await deleteAgents(agentIds);
+    return {
+      ...outcome,
+      message:
+        outcome.failed.length === 0
+          ? `Deleted ${outcome.deleted.length} session(s) permanently.`
+          : `Deleted ${outcome.deleted.length} · ${outcome.failed.length} failed`,
+    };
+  });
 
-  server.handle(terminalsRpc, async (_input, { paseo }) => {
-    const api = paseo as unknown as TerminalLister;
-    const workspaceIds = (await listWorkspaceRows()).map((row) => row.workspaceId);
-    const summaries = await summarizeTerminals(() => listAllTerminals(api), workspaceIds);
-    return { workspaces: [...summaries.values()] };
+  server.handle(agentRestoreRpc, async ({ agentId }) => restoreAgent(agentId));
+
+  server.handle(terminalCloseRpc, async ({ terminalIds }, { paseo }) => {
+    const api = paseo as unknown as TerminalLister & TerminalKiller;
+    const result = await closeTerminals(api, terminalIds);
+    return { closed: result.closed, failed: result.failed };
   });
 
   server.handle(terminalsCloseRpc, async ({ workspaceId }, { paseo }) => {
@@ -65,6 +80,7 @@ export default function contribute(server: PluginServerContext) {
 
   server.handle(workspacesRpc, async () => ({
     workspaces: await listWorkspaceRows(),
+    projects: await listProjectRows(),
     home: paseoHome(),
     serverId: await resolveServerId(),
   }));
@@ -106,8 +122,6 @@ export default function contribute(server: PluginServerContext) {
     }
     return job;
   });
-
-  server.handle(autoReleaseStateRpc, async () => readAutoReleaseState());
 
   server.handle(autoReleaseSetRpc, async (patch) => updateAutoReleaseState(patch));
 

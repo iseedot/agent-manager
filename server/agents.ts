@@ -3,11 +3,16 @@ import { str } from "./util";
 export interface AgentRecord {
   id: string;
   title: string | null;
+  provider: string | null;
+  model: string | null;
   status: string;
   archivedAt: string | null;
   workspaceId: string | null;
   parentAgentId: string | null;
   updatedAt: string | null;
+  createdAt: string | null;
+  lastUserMessageAt: string | null;
+  labels: Record<string, string>;
   requiresAttention: boolean;
   attentionReason: string | null;
   pendingPermissions: number;
@@ -24,11 +29,16 @@ export type AgentLister = (options: Record<string, unknown>) => Promise<AgentPag
 interface RawAgent {
   id?: unknown;
   title?: unknown;
+  provider?: unknown;
+  model?: unknown;
   status?: unknown;
   archivedAt?: unknown;
   workspaceId?: unknown;
   parentAgentId?: unknown;
   updatedAt?: unknown;
+  createdAt?: unknown;
+  lastUserMessageAt?: unknown;
+  labels?: unknown;
   requiresAttention?: unknown;
   attentionReason?: unknown;
   pendingPermissions?: unknown;
@@ -71,11 +81,16 @@ function toAgentRecord(raw: RawAgent | undefined): AgentRecord | null {
   return {
     id,
     title: str(raw.title),
+    provider: str(raw.provider),
+    model: str(raw.model),
     status: str(raw.status) ?? "unknown",
     archivedAt: str(raw.archivedAt),
     workspaceId: str(raw.workspaceId),
     parentAgentId: str(raw.parentAgentId),
     updatedAt: str(raw.updatedAt),
+    createdAt: str(raw.createdAt),
+    lastUserMessageAt: str(raw.lastUserMessageAt),
+    labels: strMap(raw.labels),
     requiresAttention: raw.requiresAttention === true,
     attentionReason: str(raw.attentionReason),
     pendingPermissions: Array.isArray(raw.pendingPermissions)
@@ -85,6 +100,20 @@ function toAgentRecord(raw: RawAgent | undefined): AgentRecord | null {
         : 0,
     cwd: str(raw.cwd),
   };
+}
+
+function strMap(value: unknown): Record<string, string> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return {};
+  }
+  const out: Record<string, string> = {};
+  for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+    const text = str(entry);
+    if (text !== null) {
+      out[key] = text;
+    }
+  }
+  return out;
 }
 
 function nextCursor(pageInfo: unknown): string | undefined {

@@ -12,47 +12,29 @@ import {
   type OwnedAgentSubscription,
 } from "./daemon-client";
 import { killAgentViaDaemonMcp, paseoHome } from "./daemon-mcp";
+import type { AutoReleasePatch, AutoReleaseSnapshot } from "../shared/contracts";
+import { closeIdleTerminals, terminalApiFromClient } from "./terminals";
 import { fireAndForget } from "./guard";
 import { scanAgentProcesses, scanAgentProcessesFresh } from "./processes";
 import { describe, serializeWrite, str, writeJsonAtomic } from "./util";
 import { deleteWorkspace, listWorkspaceRows } from "./workspaces";
 import type { PaseoLike } from "./overview";
 
-export interface AutoReleaseState {
-  enabled: boolean;
-  idleMinutes: number;
-  intervalMinutes: number;
-  onLoad: "allIdle" | "threshold" | "off";
-  removeEmptyWorkspaces: boolean;
-  lastRunAt: string | null;
-  lastReleased: Array<{ agentId: string; title: string | null }>;
-  lastRemovedWorkspaces: Array<{ workspaceId: string; name: string | null }>;
-  lastSkipped: number;
-  lastError: string | null;
-  nextRunAt: string | null;
-}
-
-export interface AutoReleasePatch {
-  enabled?: boolean;
-  idleMinutes?: number;
-  intervalMinutes?: number;
-  onLoad?: AutoReleaseState["onLoad"];
-  removeEmptyWorkspaces?: boolean;
-  runNow?: boolean;
-}
-
 const STATE_PATH = "agent-manager/auto-release.json";
 const TICK_MS = 60000;
 const MAX_TIMERS = 200;
-const DEFAULT_STATE: AutoReleaseState = {
+const DEFAULT_STATE: AutoReleaseSnapshot = {
   enabled: true,
   idleMinutes: 10,
   intervalMinutes: 30,
   onLoad: "threshold",
   removeEmptyWorkspaces: true,
+  closeIdleTerminals: false,
+  terminalIdleMinutes: 30,
   lastRunAt: null,
   lastReleased: [],
   lastRemovedWorkspaces: [],
+  lastClosedTerminals: 0,
   lastSkipped: 0,
   lastError: null,
   nextRunAt: null,
@@ -115,20 +97,24 @@ export function startAutoReleaseScheduler(): () => void {
   };
 }
 
-export async function readAutoReleaseState(): Promise<AutoReleaseState> {
+export async function readAutoReleaseState(): Promise<AutoReleaseSnapshot> {
   const stored = await readStoredState();
   return withDerived({ ...DEFAULT_STATE, ...stored });
 }
 
-export async function updateAutoReleaseState(patch: AutoReleasePatch): Promise<AutoReleaseState> {
+export async function updateAutoReleaseState(patch: AutoReleasePatch): Promise<AutoReleaseSnapshot> {
   const current = { ...DEFAULT_STATE, ...(await readStoredState()) };
-  const next: AutoReleaseState = {
+  const next: AutoReleaseSnapshot = {
     ...current,
     ...(patch.enabled === undefined ? {} : { enabled: patch.enabled }),
     ...(patch.idleMinutes === undefined ? {} : { idleMinutes: clamp(patch.idleMinutes, 1, 24 * 60) }),
     ...(patch.intervalMinutes === undefined ? {} : { intervalMinutes: clamp(patch.intervalMinutes, 1, 24 * 60) }),
     ...(patch.onLoad === undefined ? {} : { onLoad: patch.onLoad }),
     ...(patch.removeEmptyWorkspaces === undefined ? {} : { removeEmptyWorkspaces: patch.removeEmptyWorkspaces }),
+    ...(patch.closeIdleTerminals === undefined ? {} : { closeIdleTerminals: patch.closeIdleTerminals }),
+    ...(patch.terminalIdleMinutes === undefined
+      ? {}
+      : { terminalIdleMinutes: clamp(patch.terminalIdleMinutes, 5, 24 * 60) }),
   };
   await writeState(next);
   if (patch.enabled === false) {
@@ -271,10 +257,10 @@ function cancelTimer(agentId: string): void {
   }
 }
 
-async function sweep(mode: AutoReleaseState["onLoad"]): Promise<void> {
+async function sweep(mode: AutoReleaseSnapshot["onLoad"]): Promise<void> {
   const state = { ...DEFAULT_STATE, ...(await readStoredState()) };
   if (!state.enabled || running || mode === "off") {
-    await recordRun(state, [], [], 0, null);
+    await recordRun(state, [], [], 0, 0, null);
     return;
   }
   running = true;
@@ -328,7 +314,23 @@ async function sweep(mode: AutoReleaseState["onLoad"]): Promise<void> {
   } catch (removalError) {
     error = describe(removalError);
   }
-  await recordRun(state, released, removed, skipped, error).catch((recordError) => {
+
+  let closedTerminals = 0;
+  if (state.closeIdleTerminals) {
+    try {
+      const client = await getDaemonClient();
+      const result = await closeIdleTerminals(terminalApiFromClient(client), state.terminalIdleMinutes);
+      closedTerminals = result.closed.length;
+      skipped += result.skipped;
+      if (result.failed.length > 0) {
+        error = error ?? result.failed[0]?.error ?? null;
+      }
+    } catch (terminalError) {
+      error = error ?? describe(terminalError);
+    }
+  }
+
+  await recordRun(state, released, removed, closedTerminals, skipped, error).catch((recordError) => {
     console.log(`agent-manager could not record the sweep: ${describe(recordError)}`);
   });
 }
@@ -400,9 +402,10 @@ async function removeEmptyWorkspaces(): Promise<Array<{ workspaceId: string; nam
 }
 
 async function recordRun(
-  state: AutoReleaseState,
+  state: AutoReleaseSnapshot,
   released: Array<{ agentId: string; title: string | null }>,
   removedWorkspaces: Array<{ workspaceId: string; name: string | null }>,
+  closedTerminals: number,
   skipped: number,
   error: string | null,
 ): Promise<void> {
@@ -413,13 +416,14 @@ async function recordRun(
       lastRunAt: finishedAt,
       lastReleased: released,
       lastRemovedWorkspaces: removedWorkspaces,
+      lastClosedTerminals: closedTerminals,
       lastSkipped: skipped,
       lastError: error,
     }),
   );
 }
 
-function withDerived(state: AutoReleaseState): AutoReleaseState {
+function withDerived(state: AutoReleaseSnapshot): AutoReleaseSnapshot {
   if (!state.enabled) {
     return { ...state, nextRunAt: null };
   }
@@ -495,17 +499,17 @@ async function exists(path: string): Promise<boolean> {
   }
 }
 
-async function readStoredState(): Promise<Partial<AutoReleaseState>> {
+async function readStoredState(): Promise<Partial<AutoReleaseSnapshot>> {
   try {
     const raw = await readFile(join(paseoHome(), STATE_PATH), "utf8");
-    const parsed = JSON.parse(raw) as Partial<AutoReleaseState>;
+    const parsed = JSON.parse(raw) as Partial<AutoReleaseSnapshot>;
     return parsed && typeof parsed === "object" ? parsed : {};
   } catch {
     return {};
   }
 }
 
-function writeState(state: AutoReleaseState): Promise<void> {
+function writeState(state: AutoReleaseSnapshot): Promise<void> {
   return serializeWrite(() => writeJsonAtomic(join(paseoHome(), STATE_PATH), state));
 }
 

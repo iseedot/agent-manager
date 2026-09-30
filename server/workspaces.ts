@@ -2,6 +2,15 @@ import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 
+import type {
+  ArchiveOutcome,
+  CloseGroupOutcome,
+  DeleteWorkspaceOutcome,
+  JobSnapshot,
+  ProjectRow,
+  RenameOutcome,
+  WorkspaceRow,
+} from "../shared/contracts";
 import { listAllAgents, type AgentLister } from "./agents";
 import { deleteAgents } from "./actions";
 import { beginDaemonClientUse, endDaemonClientUse, getDaemonClient, type WorkspaceRecoveryState } from "./daemon-client";
@@ -15,18 +24,6 @@ import {
   str,
   writeJsonAtomic,
 } from "./util";
-
-export interface WorkspaceRow {
-  workspaceId: string;
-  projectId: string;
-  name: string | null;
-  cwd: string;
-  kind: string;
-  branch: string | null;
-  archivedAt: string | null;
-  createdAt: string | null;
-  projectName: string | null;
-}
 
 export interface WorkspaceAgent {
   id: string;
@@ -45,27 +42,6 @@ export interface PaseoWorkspaceControl extends PaseoLike {
   };
 }
 
-export interface JobFailure {
-  agentId: string;
-  error: string;
-}
-
-export interface JobState {
-  jobId: string;
-  workspaceId: string;
-  workspaceName: string;
-  phase: "workspace" | "tabs" | "done" | "failed";
-  total: number;
-  done: number;
-  current: string | null;
-  restoredWorkspace: boolean;
-  failed: JobFailure[];
-  message: string | null;
-  startedAt: string;
-  finishedAt: string | null;
-  finished: boolean;
-}
-
 interface WorkspaceRecord {
   workspaceId?: unknown;
   projectId?: unknown;
@@ -75,17 +51,25 @@ interface WorkspaceRecord {
   customName?: unknown;
   archivedAt?: unknown;
   createdAt?: unknown;
+  updatedAt?: unknown;
   branch?: unknown;
+  baseBranch?: unknown;
+  worktreeRoot?: unknown;
+  mainRepoRoot?: unknown;
+  isPaseoOwnedWorktree?: unknown;
+  pinnedAt?: unknown;
+  autoArchivedChangeRequestUrl?: unknown;
 }
 
 interface ProjectRecord {
   projectId?: unknown;
   rootPath?: unknown;
+  kind?: unknown;
   displayName?: unknown;
   customName?: unknown;
 }
 
-const JOBS = new Map<string, JobState>();
+const JOBS = new Map<string, JobSnapshot>();
 const ACTIVE_JOBS = new Map<string, string>();
 const JOB_HISTORY = 8;
 const ARCHIVE_BATCH_WINDOW_MS = 60000;
@@ -98,20 +82,31 @@ interface DeletedState {
   workspaceIds: string[];
 }
 
-export async function listWorkspaceRows(): Promise<WorkspaceRow[]> {
-  const [workspaces, projects, deleted] = await Promise.all([
-    readJsonList<WorkspaceRecord>(REGISTRY_PATH, "workspaces"),
-    readJsonList<ProjectRecord>(PROJECTS_PATH, "projects"),
-    readDeletedState(),
-  ]);
-  const projectNames = new Map<string, string | null>();
+export async function listProjectRows(): Promise<ProjectRow[]> {
+  const projects = await readJsonList<ProjectRecord>(PROJECTS_PATH, "projects");
+  const rows: ProjectRow[] = [];
   for (const project of projects) {
     const projectId = str(project.projectId);
     if (!projectId) {
       continue;
     }
-    projectNames.set(projectId, str(project.customName) ?? str(project.displayName) ?? str(project.rootPath));
+    rows.push({
+      projectId,
+      name: str(project.customName) ?? str(project.displayName) ?? str(project.rootPath),
+      rootPath: str(project.rootPath),
+      kind: str(project.kind),
+    });
   }
+  return rows;
+}
+
+export async function listWorkspaceRows(): Promise<WorkspaceRow[]> {
+  const [workspaces, projects, deleted] = await Promise.all([
+    readJsonList<WorkspaceRecord>(REGISTRY_PATH, "workspaces"),
+    listProjectRows(),
+    readDeletedState(),
+  ]);
+  const projectById = new Map(projects.map((project) => [project.projectId, project]));
 
   const rows: WorkspaceRow[] = [];
   const reclaimed: string[] = [];
@@ -130,6 +125,7 @@ export async function listWorkspaceRows(): Promise<WorkspaceRow[]> {
     if (!projectId) {
       continue;
     }
+    const project = projectById.get(projectId) ?? null;
     rows.push({
       workspaceId,
       projectId,
@@ -137,9 +133,17 @@ export async function listWorkspaceRows(): Promise<WorkspaceRow[]> {
       cwd: str(record.cwd) ?? "",
       kind: str(record.kind) ?? "directory",
       branch: str(record.branch),
+      baseBranch: str(record.baseBranch),
+      worktreeRoot: str(record.worktreeRoot),
+      mainRepoRoot: str(record.mainRepoRoot),
+      isPaseoOwnedWorktree: record.isPaseoOwnedWorktree === true,
+      pinnedAt: str(record.pinnedAt),
+      autoArchivedChangeRequestUrl: str(record.autoArchivedChangeRequestUrl),
       archivedAt: str(record.archivedAt),
       createdAt: str(record.createdAt),
-      projectName: projectNames.get(projectId) ?? null,
+      updatedAt: str(record.updatedAt),
+      projectName: project?.name ?? null,
+      projectRoot: project?.rootPath ?? null,
     });
   }
 
@@ -170,22 +174,6 @@ export async function listWorkspaceAgents(paseo: PaseoLike, workspaceId: string)
       archivedAt: record.archivedAt,
       parentAgentId: record.parentAgentId,
     }));
-}
-
-export interface ArchiveOutcome {
-  ok: boolean;
-  refused: boolean;
-  message: string;
-  archivedAt: string | null;
-  activeAtPath: number;
-  willReopen: { workspaceId: string; name: string | null } | null;
-  touchedOthers: string[];
-}
-
-export interface RenameOutcome {
-  ok: boolean;
-  title: string | null;
-  message: string;
 }
 
 export async function renameWorkspace(workspaceId: string, title: string | null): Promise<RenameOutcome> {
@@ -288,13 +276,6 @@ export async function archiveWorkspace(
   };
 }
 
-export interface CloseGroupOutcome {
-  ok: boolean;
-  message: string;
-  closed: string[];
-  touchedOthers: string[];
-}
-
 export async function closeWorkspaceTabs(paseo: PaseoLike, workspaceId: string): Promise<CloseGroupOutcome> {
   const agents = await listWorkspaceAgents(paseo, workspaceId);
   const targets = agents.filter((agent) => agent.archivedAt === null && agent.parentAgentId === null);
@@ -330,14 +311,7 @@ async function changedOthers(before: Map<string, string | null>, workspaceId: st
     .map(([id]) => id);
 }
 
-export interface DeleteOutcome {
-  ok: boolean;
-  message: string;
-  deletedAgents: string[];
-  failed: Array<{ agentId: string; error: string }>;
-}
-
-export async function deleteWorkspace(paseo: PaseoLike, workspaceId: string): Promise<DeleteOutcome> {
+export async function deleteWorkspace(paseo: PaseoLike, workspaceId: string): Promise<DeleteWorkspaceOutcome> {
   const rows = await listWorkspaceRows();
   const target = rows.find((row) => row.workspaceId === workspaceId) ?? null;
   if (!target) {
@@ -353,12 +327,12 @@ export async function deleteWorkspace(paseo: PaseoLike, workspaceId: string): Pr
     const swept =
       leftover.length > 0
         ? await deleteAgents(leftover.map((agent) => agent.id))
-        : { succeeded: [] as string[], failed: [] as Array<{ agentId: string; error: string }> };
+        : { deleted: [] as string[], failed: [] as Array<{ agentId: string; error: string }> };
     await stripWorkspaceRecord(workspaceId);
     return {
       ok: true,
-      message: `Workspace already deleted · ${swept.succeeded.length} leftover session(s) removed`,
-      deletedAgents: swept.succeeded,
+      message: `Workspace already deleted · ${swept.deleted.length} leftover session(s) removed`,
+      deletedAgents: swept.deleted,
       failed: swept.failed,
     };
   }
@@ -378,7 +352,7 @@ export async function deleteWorkspace(paseo: PaseoLike, workspaceId: string): Pr
     return {
       ok: false,
       message: `Could not delete every session: ${removed.failed[0]?.error ?? "unknown error"}`,
-      deletedAgents: removed.succeeded,
+      deletedAgents: removed.deleted,
       failed: removed.failed,
     };
   }
@@ -387,8 +361,8 @@ export async function deleteWorkspace(paseo: PaseoLike, workspaceId: string): Pr
   await stripWorkspaceRecord(workspaceId);
   return {
     ok: true,
-    message: `Deleted workspace "${target.name ?? pathBasename(target.cwd)}" with ${removed.succeeded.length} session(s).`,
-    deletedAgents: removed.succeeded,
+    message: `Deleted workspace "${target.name ?? pathBasename(target.cwd)}" with ${removed.deleted.length} session(s).`,
+    deletedAgents: removed.deleted,
     failed: removed.failed,
   };
 }
@@ -404,28 +378,26 @@ async function readDeletedState(): Promise<Set<string>> {
 }
 
 function rememberDeletedWorkspace(workspaceId: string): Promise<void> {
-  return serializeWrite(async () => {
-    const known = await readDeletedState();
-    known.add(workspaceId);
-    await writeDeletedState(known);
-  });
+  return updateDeletedState((known) => known.add(workspaceId));
 }
 
 function forgetDeletedWorkspaces(workspaceIds: string[]): Promise<void> {
-  return serializeWrite(async () => {
-    const known = await readDeletedState();
+  return updateDeletedState((known) => {
     for (const id of workspaceIds) {
       known.delete(id);
     }
-    await writeDeletedState(known);
   });
 }
 
-function writeDeletedState(known: Set<string>): Promise<void> {
-  return writeJsonAtomic(join(paseoHome(), DELETED_PATH), {
-    version: 1,
-    workspaceIds: [...known].sort(),
-  } satisfies DeletedState);
+function updateDeletedState(change: (known: Set<string>) => void): Promise<void> {
+  return serializeWrite(async () => {
+    const known = await readDeletedState();
+    change(known);
+    await writeJsonAtomic(join(paseoHome(), DELETED_PATH), {
+      version: 1,
+      workspaceIds: [...known].sort(),
+    } satisfies DeletedState);
+  });
 }
 
 function stripWorkspaceRecord(workspaceId: string): Promise<void> {
@@ -466,14 +438,14 @@ function oldestArchived(rows: WorkspaceRow[], includingWorkspaceId: string): { w
   return found ? { workspaceId: found.workspaceId, name: found.name } : null;
 }
 
-export interface StartJobInput {
+interface StartJobInput {
   paseo: PaseoLike;
   workspaceId: string;
   workspaceName: string;
   tabsOnly: boolean;
 }
 
-export function startWorkspaceJob(input: StartJobInput): JobState {
+export function startWorkspaceJob(input: StartJobInput): JobSnapshot {
   const inFlight = ACTIVE_JOBS.get(input.workspaceId);
   if (inFlight) {
     const existing = JOBS.get(inFlight);
@@ -482,7 +454,7 @@ export function startWorkspaceJob(input: StartJobInput): JobState {
     }
     ACTIVE_JOBS.delete(input.workspaceId);
   }
-  const job: JobState = {
+  const job: JobSnapshot = {
     jobId: randomUUID(),
     workspaceId: input.workspaceId,
     workspaceName: input.workspaceName,
@@ -503,11 +475,11 @@ export function startWorkspaceJob(input: StartJobInput): JobState {
   return job;
 }
 
-export function readJob(jobId: string): JobState | null {
+export function readJob(jobId: string): JobSnapshot | null {
   return JOBS.get(jobId) ?? null;
 }
 
-function remember(job: JobState): void {
+function remember(job: JobSnapshot): void {
   JOBS.set(job.jobId, job);
   while (JOBS.size > JOB_HISTORY) {
     const oldest = JOBS.keys().next().value;
@@ -518,7 +490,7 @@ function remember(job: JobState): void {
   }
 }
 
-async function runWorkspaceJob(job: JobState, input: StartJobInput): Promise<void> {
+async function runWorkspaceJob(job: JobSnapshot, input: StartJobInput): Promise<void> {
   beginDaemonClientUse();
   try {
     const client = await getDaemonClient();
@@ -526,23 +498,7 @@ async function runWorkspaceJob(job: JobState, input: StartJobInput): Promise<voi
     if (!input.tabsOnly) {
       const rows = await listWorkspaceRows().catch(() => []);
       batchArchivedAt = rows.find((row) => row.workspaceId === input.workspaceId)?.archivedAt ?? null;
-    }
-    if (!input.tabsOnly) {
-      const recovery = await inspectRecovery(client, input.workspaceId);
-      if (recovery && recovery.kind !== "recoverable" && recovery.kind !== "unavailable") {
-        throw new Error(`Unexpected recovery state: ${recovery.kind}`);
-      }
-      if (recovery?.kind === "unavailable" && recovery.reason !== "workspace_not_archived") {
-        throw new Error(recovery.message ?? recovery.reason ?? "The workspace cannot be restored.");
-      }
-      if (recovery?.kind === "recoverable") {
-        job.message =
-          recovery.action === "restore"
-            ? "Recreating the worktree from its branch…"
-            : "Unarchiving the workspace…";
-        await client.restoreWorkspace(input.workspaceId);
-        job.restoredWorkspace = true;
-      }
+      await restoreWorkspaceForTabs(client, job, input.workspaceId);
     }
 
     const agents = await listWorkspaceAgents(input.paseo, input.workspaceId);
@@ -586,6 +542,27 @@ async function runWorkspaceJob(job: JobState, input: StartJobInput): Promise<voi
   }
 }
 
+async function restoreWorkspaceForTabs(
+  client: Awaited<ReturnType<typeof getDaemonClient>>,
+  job: JobSnapshot,
+  workspaceId: string,
+): Promise<void> {
+  const recovery = await inspectRecovery(client, workspaceId);
+  if (recovery && recovery.kind !== "recoverable" && recovery.kind !== "unavailable") {
+    throw new Error(`Unexpected recovery state: ${recovery.kind}`);
+  }
+  if (recovery?.kind === "unavailable" && recovery.reason !== "workspace_not_archived") {
+    throw new Error(recovery.message ?? recovery.reason ?? "The workspace cannot be restored.");
+  }
+  if (recovery?.kind !== "recoverable") {
+    return;
+  }
+  job.message =
+    recovery.action === "restore" ? "Recreating the worktree from its branch…" : "Unarchiving the workspace…";
+  await client.restoreWorkspace(workspaceId);
+  job.restoredWorkspace = true;
+}
+
 async function inspectRecovery(
   client: { inspectWorkspaceRecovery(workspaceId: string): Promise<WorkspaceRecoveryState> },
   workspaceId: string,
@@ -601,7 +578,7 @@ async function inspectRecovery(
   }
 }
 
-function summarize(job: JobState, keptClosed: number): string {
+function summarize(job: JobSnapshot, keptClosed: number): string {
   const head = job.restoredWorkspace ? "Workspace restored" : "Tabs reopened";
   const failed = job.failed.length > 0 ? ` · ${job.failed.length} failed` : "";
   const older = keptClosed > 0 ? ` · ${keptClosed} older tab kept closed` : "";

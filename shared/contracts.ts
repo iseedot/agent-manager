@@ -1,31 +1,48 @@
 import { defineRpc } from "@getpaseo/plugin";
 import { z } from "zod";
 
+export type RpcOutput<T extends { output: z.ZodType }> = z.infer<T["output"]>;
+export type RpcInput<T extends { input: z.ZodType }> = z.infer<T["input"]>;
+
 export const agentRowSchema = z.object({
   id: z.string(),
+  title: z.string().nullable(),
+  provider: z.string().nullable(),
+  model: z.string().nullable(),
   status: z.string(),
   archived: z.boolean(),
   workspaceId: z.string().nullable(),
+  parentAgentId: z.string().nullable(),
+  attentionReason: z.string().nullable(),
+  updatedAt: z.string().nullable(),
+  createdAt: z.string().nullable(),
+  lastUserMessageAt: z.string().nullable(),
+  labels: z.record(z.string(), z.string()),
+  cwd: z.string().nullable(),
   pid: z.number().int().nullable(),
   rssBytes: z.number().int().nullable(),
 });
 
 export type AgentRow = z.infer<typeof agentRowSchema>;
 
+export const overviewPayloadSchema = z.object({
+  agents: z.array(agentRowSchema),
+  totals: z.object({
+    total: z.number().int(),
+    holdingProcess: z.number().int(),
+    closed: z.number().int(),
+    archived: z.number().int(),
+    rssBytes: z.number().int(),
+  }),
+  warning: z.string().nullable(),
+});
+
+export type OverviewPayload = z.infer<typeof overviewPayloadSchema>;
+
 export const overviewRpc = defineRpc({
   name: "agent-manager.overview",
   input: z.object({}),
-  output: z.object({
-    agents: z.array(agentRowSchema),
-    totals: z.object({
-      total: z.number().int(),
-      holdingProcess: z.number().int(),
-      closed: z.number().int(),
-      archived: z.number().int(),
-      rssBytes: z.number().int(),
-    }),
-    warning: z.string().nullable(),
-  }),
+  output: overviewPayloadSchema,
 });
 
 const failureSchema = z.object({ agentId: z.string(), error: z.string() });
@@ -43,6 +60,31 @@ export const releaseManyRpc = defineRpc({
   }),
 });
 
+export const agentDeleteRpc = defineRpc({
+  name: "agent-manager.agent-delete",
+  input: z.object({ agentIds: z.array(z.string()) }),
+  output: z.object({
+    deleted: z.array(z.string()),
+    failed: z.array(failureSchema),
+    message: z.string(),
+  }),
+});
+
+export const agentRestoreRpc = defineRpc({
+  name: "agent-manager.agent-restore",
+  input: z.object({ agentId: z.string() }),
+  output: z.object({ ok: z.boolean(), message: z.string() }),
+});
+
+export const projectRowSchema = z.object({
+  projectId: z.string(),
+  name: z.string().nullable(),
+  rootPath: z.string().nullable(),
+  kind: z.string().nullable(),
+});
+
+export type ProjectRow = z.infer<typeof projectRowSchema>;
+
 export const workspaceRowSchema = z.object({
   workspaceId: z.string(),
   projectId: z.string(),
@@ -50,9 +92,17 @@ export const workspaceRowSchema = z.object({
   cwd: z.string(),
   kind: z.string(),
   branch: z.string().nullable(),
+  baseBranch: z.string().nullable(),
+  worktreeRoot: z.string().nullable(),
+  mainRepoRoot: z.string().nullable(),
+  isPaseoOwnedWorktree: z.boolean(),
+  pinnedAt: z.string().nullable(),
+  autoArchivedChangeRequestUrl: z.string().nullable(),
   archivedAt: z.string().nullable(),
   createdAt: z.string().nullable(),
+  updatedAt: z.string().nullable(),
   projectName: z.string().nullable(),
+  projectRoot: z.string().nullable(),
 });
 
 export type WorkspaceRow = z.infer<typeof workspaceRowSchema>;
@@ -81,9 +131,12 @@ export const autoReleaseStateSchema = z.object({
   intervalMinutes: z.number(),
   onLoad: z.enum(["allIdle", "threshold", "off"]),
   removeEmptyWorkspaces: z.boolean(),
+  closeIdleTerminals: z.boolean(),
+  terminalIdleMinutes: z.number(),
   lastRunAt: z.string().nullable(),
   lastReleased: z.array(z.object({ agentId: z.string(), title: z.string().nullable() })),
   lastRemovedWorkspaces: z.array(z.object({ workspaceId: z.string(), name: z.string().nullable() })),
+  lastClosedTerminals: z.number().int(),
   lastSkipped: z.number().int(),
   lastError: z.string().nullable(),
   nextRunAt: z.string().nullable(),
@@ -96,6 +149,7 @@ export const workspacesRpc = defineRpc({
   input: z.object({}),
   output: z.object({
     workspaces: z.array(workspaceRowSchema),
+    projects: z.array(projectRowSchema),
     home: z.string(),
     serverId: z.string().nullable(),
   }),
@@ -136,7 +190,10 @@ export const terminalsSummarySchema = z.object({
   count: z.number().int(),
   shells: z.number().int(),
   busy: z.number().int(),
+  working: z.number().int(),
+  idle: z.number().int(),
   rssBytes: z.number().int(),
+  names: z.array(z.string()),
 });
 
 export const systemStatsSchema = z.object({
@@ -151,17 +208,7 @@ export const systemStatsSchema = z.object({
   uptimeSeconds: z.number().nullable(),
 });
 
-export const systemRpc = defineRpc({
-  name: "agent-manager.system",
-  input: z.object({}),
-  output: systemStatsSchema,
-});
-
-export const terminalsRpc = defineRpc({
-  name: "agent-manager.terminals",
-  input: z.object({}),
-  output: z.object({ workspaces: z.array(terminalsSummarySchema) }),
-});
+export type SystemStats = z.infer<typeof systemStatsSchema>;
 
 export const terminalsCloseRpc = defineRpc({
   name: "agent-manager.terminals-close",
@@ -204,10 +251,39 @@ export const workspaceActivateRpc = defineRpc({
   output: z.object({ jobId: z.string() }),
 });
 
-export const autoReleaseStateRpc = defineRpc({
-  name: "agent-manager.auto-release-state",
+export const terminalEntrySchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  workspaceId: z.string(),
+  cwd: z.string(),
+  state: z.string().nullable(),
+  attention: z.string().nullable(),
+  changedAt: z.number().nullable(),
+});
+
+export type TerminalEntryRow = z.infer<typeof terminalEntrySchema>;
+
+export const terminalCloseRpc = defineRpc({
+  name: "agent-manager.terminal-close",
+  input: z.object({ terminalIds: z.array(z.string()) }),
+  output: z.object({
+    closed: z.array(z.string()),
+    failed: z.array(z.object({ terminalId: z.string(), error: z.string() })),
+  }),
+});
+
+export const snapshotRpc = defineRpc({
+  name: "agent-manager.snapshot",
   input: z.object({}),
-  output: autoReleaseStateSchema,
+  output: z.object({
+    overview: overviewPayloadSchema,
+    workspaces: z.array(workspaceRowSchema),
+    projects: z.array(projectRowSchema),
+    terminals: z.array(terminalsSummarySchema),
+    terminalList: z.array(terminalEntrySchema),
+    system: systemStatsSchema,
+    autoRelease: autoReleaseStateSchema,
+  }),
 });
 
 export const autoReleaseSetRpc = defineRpc({
@@ -218,6 +294,8 @@ export const autoReleaseSetRpc = defineRpc({
     intervalMinutes: z.number().optional(),
     onLoad: z.enum(["allIdle", "threshold", "off"]).optional(),
     removeEmptyWorkspaces: z.boolean().optional(),
+    closeIdleTerminals: z.boolean().optional(),
+    terminalIdleMinutes: z.number().optional(),
     runNow: z.boolean().optional(),
   }),
   output: autoReleaseStateSchema,
@@ -229,3 +307,11 @@ export const jobStatusRpc = defineRpc({
   output: jobSchema,
 });
 
+export type RenameOutcome = RpcOutput<typeof workspaceRenameRpc>;
+export type ArchiveOutcome = RpcOutput<typeof workspaceArchiveRpc>;
+export type CloseGroupOutcome = RpcOutput<typeof workspaceCloseTabsRpc>;
+export type DeleteWorkspaceOutcome = RpcOutput<typeof workspaceDeleteRpc>;
+export type ReleaseOutcome = RpcOutput<typeof releaseManyRpc>;
+export type DeleteAgentsOutcome = RpcOutput<typeof agentDeleteRpc>;
+export type TerminalSummaryRow = z.infer<typeof terminalsSummarySchema>;
+export type AutoReleasePatch = RpcInput<typeof autoReleaseSetRpc>;

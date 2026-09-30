@@ -12,41 +12,26 @@ export interface SystemStats {
   uptimeSeconds: number | null;
 }
 
-const SAMPLE_WINDOW_MS = 120;
-const CACHE_MS = 10000;
+const SAMPLE_WINDOW_MS = 200;
+const MIN_WINDOW_MS = 400;
 
-let cache: { at: number; stats: SystemStats } | null = null;
-
-export async function readSystemStats(): Promise<SystemStats> {
-  if (cache && Date.now() - cache.at < CACHE_MS) {
-    return cache.stats;
-  }
-  const stats = await sample();
-  cache = { at: Date.now(), stats };
-  return stats;
+interface CpuTicks {
+  busy: number;
+  total: number;
 }
 
-async function sample(): Promise<SystemStats> {
-  const [meminfo, loadavg, uptime, firstCpu] = await Promise.all([
+let lastTicks: CpuTicks | null = null;
+let lastPercent: { value: number | null; at: number } | null = null;
+
+export async function readSystemStats(): Promise<SystemStats> {
+  const [meminfo, loadavg, uptime, ticks] = await Promise.all([
     readText("/proc/meminfo"),
     readText("/proc/loadavg"),
     readText("/proc/uptime"),
     readCpuTicks(),
   ]);
 
-  let cpuPercent: number | null = null;
-  if (firstCpu !== null) {
-    await delay(SAMPLE_WINDOW_MS);
-    const secondCpu = await readCpuTicks();
-    if (secondCpu !== null) {
-      const totalDelta = secondCpu.total - firstCpu.total;
-      const busyDelta = secondCpu.busy - firstCpu.busy;
-      if (totalDelta > 0) {
-        cpuPercent = Math.min(100, Math.max(0, (busyDelta / totalDelta) * 100));
-      }
-    }
-  }
-
+  const cpuPercent = await cpuPercentSinceLastSample(ticks);
   const memory = parseMemory(meminfo);
   const load = parseLoad(loadavg);
 
@@ -63,7 +48,49 @@ async function sample(): Promise<SystemStats> {
   };
 }
 
-async function readCpuTicks(): Promise<{ busy: number; total: number } | null> {
+async function cpuPercentSinceLastSample(ticks: CpuTicks | null): Promise<number | null> {
+  if (ticks === null) {
+    return lastPercent?.value ?? null;
+  }
+  const now = Date.now();
+  const previous = lastTicks;
+  if (previous === null) {
+    const seeded = await seedTicks(ticks);
+    return seeded;
+  }
+  lastTicks = ticks;
+  if (now - (lastPercent?.at ?? 0) < MIN_WINDOW_MS) {
+    return lastPercent?.value ?? null;
+  }
+  const percent = percentBetween(previous, ticks);
+  if (percent !== null) {
+    lastPercent = { value: percent, at: now };
+  }
+  return lastPercent?.value ?? null;
+}
+
+async function seedTicks(first: CpuTicks): Promise<number | null> {
+  await delay(SAMPLE_WINDOW_MS);
+  const second = await readCpuTicks();
+  if (second === null) {
+    return null;
+  }
+  lastTicks = second;
+  const percent = percentBetween(first, second);
+  lastPercent = { value: percent, at: Date.now() };
+  return percent;
+}
+
+function percentBetween(previous: CpuTicks, next: CpuTicks): number | null {
+  const totalDelta = next.total - previous.total;
+  const busyDelta = next.busy - previous.busy;
+  if (totalDelta <= 0 || busyDelta < 0) {
+    return null;
+  }
+  return Math.min(100, Math.max(0, (busyDelta / totalDelta) * 100));
+}
+
+async function readCpuTicks(): Promise<CpuTicks | null> {
   const stat = await readText("/proc/stat");
   if (stat === null) {
     return null;
