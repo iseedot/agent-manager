@@ -37,7 +37,10 @@ title and starting with the session state (`running` / `idle` / `no runtime` / `
 - Every row carries live numbers on one line: which sessions keep a process alive, that memory,
   running count, terminals with their directory and state, provider, labels, last activity.
 - On a phone, swiping a row to the left reveals its actions (open, release, archive/restore) so the
-  common case needs no trip to the right-hand pane, and the swiped row becomes the selected one. Actions sit in the row's own
+  common case needs no trip to the right-hand pane, and the swiped row becomes the selected one. Swiping
+  all the way past the actions runs the one at the edge by itself, the way iOS
+  `performsFirstActionWithFullSwipe` does: past the panel the row keeps travelling against friction and
+  an armed block scales up, then letting go fires it. Actions sit in the row's own
   rounded track, the primary action is the first one revealed at the edge, and the row leaves a faint
   separator between blocks. It engages only on a horizontal drag — a tap still selects, the chevron
   still expands, and the list still scrolls — while destructive actions stay in the pane where they ask
