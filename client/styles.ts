@@ -160,6 +160,17 @@ export function buildStyles(theme: ThemeLike, compact: boolean): { styles: Style
       gap: 8,
       marginTop: 2,
     },
+    paletteRow: { flexDirection: "row" as const, gap: 6 },
+    paletteItem: { width: 64, gap: 2 },
+    paletteSwatch: {
+      height: 20,
+      borderRadius: 5,
+      borderWidth: 1,
+      borderColor: palette.border,
+    },
+    paletteKey: { color: palette.foregroundMuted, fontSize: 9, lineHeight: 12 },
+    paletteValue: { color: palette.foregroundMuted, fontSize: 9, lineHeight: 12, opacity: 0.85 },
+    paletteNote: { color: palette.foregroundMuted, fontSize: 10, lineHeight: 14 },
     heroSettingsLabel: { flexDirection: "row" as const, alignItems: "center" as const, gap: 6 },
     heroSettingsHint: { color: palette.foregroundMuted, fontSize: 11, flexShrink: 1, flexGrow: 1 },
     heroButtons: {

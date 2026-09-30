@@ -35,6 +35,11 @@ with the session state (`running` / `idle` / `no runtime` / `error`).
 - Every row carries live numbers on one line: which sessions keep a process alive, that memory,
   running count, terminals with their directory and state, provider, labels, last activity.
 - `Settings` is collapsed by default and holds the view filter and the auto-release switches.
+- A theme strip at the top of the panel shows every colour Paseo hands a plugin (the host palette)
+  next to the tones this plugin derives from it, each with its raw value, for checking a theme at a
+  glance. Paseo passes eleven colours — `surface0` / `surface1` / `surface2`, `border`, `foreground`,
+  `foregroundMuted`, `accent`, `accentForeground`, `statusSuccess`, `statusWarning`, `statusDanger` —
+  and nothing else; the derived tones are what the panel actually paints with.
 
 ## Terms
 

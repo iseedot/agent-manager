@@ -1,7 +1,7 @@
 import { usePaseo, useRpc, type PluginSurfaceProps } from "@getpaseo/plugin/client";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ActivityIndicator, Pressable, Text, View } from "react-native";
+import { ActivityIndicator, Pressable, ScrollView, Text, View } from "react-native";
 
 import {
   agentDeleteRpc,
@@ -289,6 +289,18 @@ export function AgentManagerPanel({ theme, host, layout, navigation }: PluginSur
 
   const { styles, tones } = useMemo(() => buildStyles(theme, compact), [theme, compact]);
 
+  const palette = useMemo(() => {
+    const raw = Object.entries(theme.colors as Record<string, string>).map(([key, value]) => ({
+      key,
+      value: String(value),
+    }));
+    const derived = Object.entries(tones as unknown as Record<string, string>).map(([key, value]) => ({
+      key: `tone.${key}`,
+      value: String(value),
+    }));
+    return { raw, derived, all: [...raw, ...derived] };
+  }, [theme, tones]);
+
   const ctx: ActionsContext = useMemo(
     () => ({
       busy,
@@ -405,6 +417,25 @@ export function AgentManagerPanel({ theme, host, layout, navigation }: PluginSur
             </Text>
           ))}
         </Text>
+
+        <View>
+          <Text style={styles.paletteNote} numberOfLines={1}>
+            THEME · {palette.raw.length} host colours + {palette.derived.length} plugin tones
+          </Text>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.paletteRow}>
+            {palette.all.map((entry) => (
+              <View key={entry.key} style={styles.paletteItem}>
+                <View style={[styles.paletteSwatch, { backgroundColor: entry.value }]} />
+                <Text style={styles.paletteKey} numberOfLines={1}>
+                  {entry.key}
+                </Text>
+                <Text style={styles.paletteValue} numberOfLines={1}>
+                  {entry.value}
+                </Text>
+              </View>
+            ))}
+          </ScrollView>
+        </View>
 
         <View style={styles.heroActions}>
           <Pressable
