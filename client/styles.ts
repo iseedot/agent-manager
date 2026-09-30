@@ -135,7 +135,7 @@ export interface TreeMetrics {
 }
 
 export function treeMetrics(compact: boolean): TreeMetrics {
-  return { chevron: compact ? 22 : 16 };
+  return { chevron: compact ? 11 : 8 };
 }
 
 export function buildStyles(theme: ThemeLike, compact: boolean): { styles: StyleMap; tones: Tones } {
@@ -235,14 +235,15 @@ export function buildStyles(theme: ThemeLike, compact: boolean): { styles: Style
     treeRowArchived: { opacity: 0.72 },
     treeBar: {
       width: tree.chevron,
+      height: compact ? 38 : 32,
+      alignSelf: "center" as const,
       alignItems: "center" as const,
       justifyContent: "center" as const,
-      borderTopLeftRadius: 7,
-      borderBottomLeftRadius: 7,
+      borderRadius: 3,
     },
     treeBarProject: { backgroundColor: tones.accent },
     treeBarWorkspace: { backgroundColor: alpha(palette.foregroundMuted, 0.3) },
-    treeBarLabel: { fontSize: compact ? 11 : 9 },
+    treeBarLabel: { fontSize: compact ? 10 : 8 },
     treeBarLabelProject: { color: tones.onAccent },
     treeBarLabelWorkspace: { color: palette.foreground },
     treeBarSpacer: { width: tree.chevron },

@@ -25,8 +25,9 @@ host.lan · 27 records · 5 unarchived (4 no runtime) · 22 archived
 ```
 
 Rows are flat — nothing is indented, so long titles keep the full width. The expand arrow *is* the level
-marker: one full-height bar hugging the left edge, filled by level (accent for a project, a translucent
-grey for a workspace, nothing at all for a session) with the arrow glyph inside it. Selecting a row
+marker: one slim bar hugging the left edge, about two thirds of the row height, filled by level (accent
+for a project, a translucent grey for a workspace, nothing at all for a session) with the arrow glyph
+inside it. Selecting a row
 outlines it in the accent colour. Each row carries one secondary line of live numbers, aligned with its
 title and starting with the session state (`running` / `idle` / `no runtime` / `error`).
 
