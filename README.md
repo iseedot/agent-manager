@@ -93,10 +93,18 @@ If the host cannot open that link either, it creates the session through the dae
 panel from any session, which is the shortest way in on a phone where the sidebar is a drawer. The same
 thing is in ⌘K as `Open Agent Manager`.
 
-Both pills are icon-only: a composer pill shows `label ?? title`, and the host renders nothing at all
+The pills are icon-only: a composer pill shows `label ?? title`, and the host renders nothing at all
 when that value is falsy, so an empty label leaves the icon centred. The title still drives the hover
-tooltip and the accessibility label. A pill behaviour can be `action`, a `menu` of entries, or a
-`popover` rendering plugin UI, and `update()` can swap any of that at runtime.
+tooltip and the accessibility label.
+
+Three pill behaviours are in use, which is also a comparison of what the composer area can carry:
+
+- `New agent` adapts to its session: while a turn runs it shows an hourglass, is disabled, and its
+  tooltip explains why.
+- `Agent Manager` opens a menu: open the panel, release the idle sessions in this workspace, release
+  this session, archive this session.
+- `Memory in this workspace` opens a popover rendering plugin UI: the workspace's session count, how
+  many hold a process and how much memory, the sessions that do, and buttons to release them.
 
 **⌘K** — `Release other sessions` releases everything in the focused workspace except the current one.
 

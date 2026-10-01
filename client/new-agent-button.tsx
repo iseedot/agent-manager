@@ -3,16 +3,20 @@ import { Linking } from "react-native";
 
 import { workspacesRpc } from "../shared/contracts";
 import { message } from "./format";
+import { buildPanelMenu, WorkspaceMemoryPopover } from "./pill-behavior";
 
 const PILL_ID = "new-agent-pill";
 const PANEL_PILL_ID = "agent-manager-pill";
+const MEMORY_PILL_ID = "workspace-memory-pill";
 const PANEL_SURFACE_ID = "agent-manager";
 const PANEL_TITLE = "Agent Manager";
 const FOCUS_SURFACE_ID = "open-agent";
 const TITLE = "New agent";
 const PILL_LABEL = "";
 const ICON = "Plus";
+const BUSY_ICON = "Hourglass";
 const PANEL_ICON = "Cpu";
+const MEMORY_ICON = "MemoryStick";
 const AGENT_PAGE_LIMIT = 200;
 const REFRESH_THROTTLE_MS = 5000;
 const ERROR_TITLE_MS = 8000;
@@ -21,6 +25,7 @@ type Paseo = PluginClientContext["paseo"];
 
 interface AgentLike {
   id?: unknown;
+  status?: unknown;
   workspaceId?: unknown;
   archivedAt?: unknown;
   provider?: unknown;
@@ -76,7 +81,7 @@ export function contributeComposerPills(client: PluginClientContext): () => void
     }
   };
 
-  const register = (agentId: string, workspaceId: string): void => {
+  const register = (agentId: string, workspaceId: string, status?: string): void => {
     if (released || pills.has(agentId)) {
       return;
     }
@@ -99,10 +104,47 @@ export function contributeComposerPills(client: PluginClientContext): () => void
         title: PANEL_TITLE,
         label: PILL_LABEL,
         icon: PANEL_ICON,
-        behavior: { kind: "action" as const, onPress: openPanel },
+        behavior: buildPanelMenu(client, workspaceId, agentId),
       },
     });
-    pills.set(agentId, [registration, panel]);
+    const memory = client.addComposerPill({
+      id: MEMORY_PILL_ID,
+      workspaceId,
+      agentId,
+      button: {
+        title: "Memory in this workspace",
+        label: PILL_LABEL,
+        icon: MEMORY_ICON,
+        behavior: {
+          kind: "popover" as const,
+          Content: (props) => (
+            <WorkspaceMemoryPopover {...props} client={client} openSurface={openPanel} />
+          ),
+        },
+      },
+    });
+    pills.set(agentId, [registration, panel, memory]);
+    applyStatus(agentId, status);
+  };
+
+  const applyStatus = (agentId: string, status: string | undefined): void => {
+    if (status === undefined) {
+      return;
+    }
+    const registration = pills.get(agentId)?.[0];
+    if (!registration) {
+      return;
+    }
+    const running = status === "running";
+    try {
+      registration.update({
+        icon: running ? BUSY_ICON : ICON,
+        disabled: running,
+        title: running ? "A turn is running in this session" : TITLE,
+      });
+    } catch (error) {
+      fail("update the composer pill", error);
+    }
   };
 
   const drop = (agentId: string): void => {
@@ -122,7 +164,7 @@ export function contributeComposerPills(client: PluginClientContext): () => void
       }
       live.add(id);
       try {
-        register(id, workspaceId);
+        register(id, workspaceId, text(agent?.status) ?? undefined);
       } catch (error) {
         fail("register the composer pill", error);
       }
@@ -200,7 +242,8 @@ export function contributeComposerPills(client: PluginClientContext): () => void
       return;
     }
     try {
-      register(agentId, workspaceId);
+      register(agentId, workspaceId, text(payload?.agent?.status) ?? undefined);
+      applyStatus(agentId, text(payload?.agent?.status) ?? undefined);
     } catch (error) {
       fail("register the composer pill", error);
     }
