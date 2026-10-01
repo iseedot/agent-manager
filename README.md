@@ -93,6 +93,11 @@ If the host cannot open that link either, it creates the session through the dae
 panel from any session, which is the shortest way in on a phone where the sidebar is a drawer. The same
 thing is in ⌘K as `Open Agent Manager`.
 
+Both pills are icon-only: a composer pill shows `label ?? title`, and the host renders nothing at all
+when that value is falsy, so an empty label leaves the icon centred. The title still drives the hover
+tooltip and the accessibility label. A pill behaviour can be `action`, a `menu` of entries, or a
+`popover` rendering plugin UI, and `update()` can swap any of that at runtime.
+
 **⌘K** — `Release other sessions` releases everything in the focused workspace except the current one.
 
 ## Auto-release
