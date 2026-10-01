@@ -83,33 +83,42 @@ header does the same for the whole host.
 **Terminals** — listed per workspace and one row each, with the daemon's own state (`working`,
 `waiting at a prompt`, or `not reporting activity`) and a `Close` button per terminal.
 
-**New agent** — above the composer. Desktop and web: it fires Paseo's own new-agent action, the one
+**New agent** — in the composer pill panel. Desktop and web: it fires Paseo's own new-agent action, the one
 behind the tab bar `+` menu and `Ctrl+Shift+A` / `Cmd+Shift+A`, so the usual draft tab opens. Native
 hosts have no keyboard layer, so it opens the same draft through Paseo's own `paseo:` deep link
 (`?open=draft:…`) — the tab appears instantly and the session is created when the first message is sent.
 If the host cannot open that link either, it creates the session through the daemon and jumps to it.
 
-**Open the panel** — a second pill on the composer (the CPU icon) jumps straight to the Agent Manager
-panel from any session, which is the shortest way in on a phone where the sidebar is a drawer. The same
-thing is in ⌘K as `Open Agent Manager`.
+**Open the panel** — the `Open panel` button in the composer pill panel jumps straight to the Agent
+Manager panel from any session, which is the shortest way in on a phone where the sidebar is a drawer.
+The same thing is in ⌘K as `Open Agent Manager`.
 
-Composer pills carry a short label: `New`, `Panel`, `Memory`. A pill renders `label ?? title`, and the
-host rejects a `label` that is empty or whitespace (`Plugin button needs label`), so the only way to get
-an icon-only pill is a zero-width space — which passes validation but leaves an invisible text node
-behind and therefore nudges the icon off centre. Short labels are both accepted and aligned, and the
-title still drives the hover tooltip and the accessibility name.
+A pill renders `label ?? title`, and the host rejects a `label` that is empty or whitespace
+(`Plugin button needs label`), so neither an icon-only pill nor an empty label is possible without a
+zero-width space — which passes validation but leaves an invisible text node behind and therefore nudges
+the icon off centre. The pill's label therefore always carries live numbers, so it never disappears and
+never looks like a stray icon.
 
-Two pills sit above the composer, and both follow the session they belong to:
+One pill sits above the composer and follows the session it belongs to. Its label is the workspace at a
+glance — `3 tabs · 118M` is the open tab count and the memory their runtimes hold — while the tooltip and
+the accessibility name carry the full sentence. Opening it shows one panel:
 
-- `Tab` opens a menu built like the tab strip itself: `New Agent` (the app's own new-agent action),
-  `Close Tab` (archives the session, which is what closing a tab does), a separator, then every tab of
-  this workspace — unarchived root sessions, newest first, with the current one marked and inert.
-  Choosing a tab focuses it through the same navigation the app uses, so it switches workspace and tab.
-- `Status` opens a popover with the host numbers (`load`, `cpu`, `mem`, `swap`) on one line, the current
-  tab's numbers on the next (`Created … · Updated … · Last message … · memory · pid`), and a
-  `Release idle (N)` button for every idle runtime in the workspace.
+- the host line (`load`, `cpu`, `mem`, `swap`),
+- every open tab of this workspace, newest first, each with its state — `running`, `unread` (the turn
+  finished and has not been looked at), `needs input` (waiting on a permission), `failed`, `idle` (a
+  runtime is held but nothing is working) or `no runtime` — plus the memory it holds. The current tab is
+  highlighted and inert; picking another focuses it through the same navigation the app uses, so it
+  switches workspace and tab,
+- `New Agent`, `Close tab` (archives the session, which is what closing a tab does), `Release idle (N)`
+  (stops this workspace's idle runtimes without dropping their tabs or history) and `Open panel`,
+- the current tab's own numbers (`Created … · Updated … · Last message … · memory · pid`).
 
-Both stay current from one throttled read of the session list, so a menu never lists a tab that is gone.
+Switching tabs goes through a tiny redirect surface, because a composer pill has no navigation of its
+own. That surface subscribes to focus requests instead of reading one at mount, so a request that arrives
+while it is already mounted — a second pick before the first navigation lands — still switches.
+
+The pill stays current from one throttled read of the session list, and the panel reads a fresh snapshot
+each time it opens, so it never lists a tab that is gone.
 
 ## Auto-release
 
@@ -165,8 +174,8 @@ announces `plugin_catalog_changed` after an install, a reload or an update. A ph
 offline during the change keeps running the bundle it already has until it reconnects.
 
 The footer of the panel shows a `ui <code>` stamp derived from the client code that is actually
-executing, so a stale client is easy to spot: compare it with the code the current source produces. A
-second composer pill (CPU) and `Open Agent Manager` in ⌘K are part of the same build.
+executing, so a stale client is easy to spot: compare it with the code the current source produces. The
+composer pill and `Open Agent Manager` in ⌘K are part of the same build.
 
 ## Development
 

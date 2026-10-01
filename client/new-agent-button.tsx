@@ -1,28 +1,17 @@
-import type { PluginButtonRegistration, PluginClientContext } from "@getpaseo/plugin/client";
+import type { PluginButtonContentProps, PluginClientContext } from "@getpaseo/plugin/client";
 import { Linking } from "react-native";
 
 import { overviewRpc, workspacesRpc, type AgentRow } from "../shared/contracts";
-import { formatBytes, message } from "./format";
-import {
-  buildTabMenu,
-  tabTitle,
-  WorkspaceStatusPopover,
-  type WorkspaceTab,
-} from "./pill-behavior";
+import { WorkspacePillPanel } from "./composer-panel";
+import { formatBytes, formatMegabytes, message } from "./format";
 
-const TAB_PILL_ID = "agent-tab-pill";
-const STATUS_PILL_ID = "workspace-status-pill";
-const PANEL_SURFACE_ID = "agent-manager";
-const TAB_TITLE = "Tabs";
-const STATUS_TITLE = "Status";
+const PILL_ID = "agent-workspace-pill";
+const FOCUS_SURFACE_ID = "open-agent";
+const PILL_TITLE = "Tabs and status";
+const LABEL_FALLBACK = "Tabs";
+const PILL_ICON = "Layers";
 const OVERVIEW_THROTTLE_MS = 5000;
 const OVERVIEW_RETRY_MS = 4000;
-const FOCUS_SURFACE_ID = "open-agent";
-const TITLE = "New agent";
-const LABEL_TAB = "Tab";
-const LABEL_STATUS = "Status";
-const TAB_ICON = "Layers";
-const STATUS_ICON = "Activity";
 const AGENT_PAGE_LIMIT = 200;
 const REFRESH_THROTTLE_MS = 5000;
 const ERROR_TITLE_MS = 8000;
@@ -47,11 +36,28 @@ interface AgentConfig {
   thinkingOptionId?: string;
 }
 
-let pendingRequest: { workspaceId: string; paseo: Paseo } | null = null;
+export interface NewAgentRequest {
+  workspaceId: string;
+  paseo: Paseo;
+}
+
 let pendingFocus: string | null = null;
+let pendingRequest: NewAgentRequest | null = null;
+const requestListeners = new Set<() => void>();
+
+function emitRequest(): void {
+  for (const listener of [...requestListeners]) {
+    try {
+      listener();
+    } catch {
+      continue;
+    }
+  }
+}
 
 export function requestAgentFocus(agentId: string): void {
   pendingFocus = agentId;
+  emitRequest();
 }
 
 export function consumeAgentFocus(): string | null {
@@ -60,132 +66,131 @@ export function consumeAgentFocus(): string | null {
   return agentId;
 }
 
-export function consumeNewAgentRequest(): { workspaceId: string; paseo: Paseo } | null {
+export function requestNewAgent(workspaceId: string, paseo: Paseo): void {
+  pendingRequest = { workspaceId, paseo };
+  emitRequest();
+}
+
+export function consumeNewAgentRequest(): NewAgentRequest | null {
   const request = pendingRequest;
   pendingRequest = null;
   return request;
 }
 
+export function subscribeComposerRequests(listener: () => void): () => void {
+  requestListeners.add(listener);
+  return () => {
+    requestListeners.delete(listener);
+  };
+}
+
+let mountedFocusSurfaces = 0;
+
+export function markFocusSurfaceMounted(): void {
+  mountedFocusSurfaces += 1;
+}
+
+export function unmarkFocusSurfaceMounted(): void {
+  mountedFocusSurfaces = Math.max(0, mountedFocusSurfaces - 1);
+}
+
+export function isFocusSurfaceMounted(): boolean {
+  return mountedFocusSurfaces > 0;
+}
+
 export function contributeComposerPills(client: PluginClientContext): () => void {
-  const pills = new Map<string, PluginButtonRegistration[]>();
+  const pills = new Map<string, ReturnType<PluginClientContext["addComposerPill"]>>();
   const busy = new Set<string>();
   let released = false;
   let lastListedAt = 0;
   let overview: AgentRow[] = [];
   let lastOverviewAt = 0;
   let overviewTask: Promise<void> | null = null;
-  let overviewLoaded = false;
   let overviewRetry: ReturnType<typeof setTimeout> | null = null;
   const signatures = new Map<string, string>();
 
   const flash = (title: string): void => {
-    for (const registrations of pills.values()) {
-      registrations[0]?.update({ title });
+    for (const registration of pills.values()) {
+      try {
+        registration.update({ title });
+      } catch {
+        continue;
+      }
     }
     setTimeout(() => {
-      for (const registrations of pills.values()) {
-        registrations[0]?.update({ title: TITLE });
+      for (const agentId of [...pills.keys()]) {
+        signatures.delete(agentId);
+        applyStatus(agentId);
       }
     }, ERROR_TITLE_MS);
-  };
-
-  const openPanel = (): void => {
-    try {
-      client.openSurface(PANEL_SURFACE_ID);
-    } catch (error) {
-      fail("open the panel", error);
-    }
   };
 
   const fail = (what: string, error: unknown): void => {
     console.log(`agent-manager could not ${what}: ${message(error)}`);
     if (what === "create the session") {
-      flash(`${TITLE} — failed: ${message(error)}`);
+      flash(`New agent — failed: ${message(error)}`);
     }
   };
 
-  const register = (agentId: string, workspaceId: string, nextStatus?: string): void => {
+  const register = (agentId: string, workspaceId: string): void => {
     if (released || pills.has(agentId)) {
       return;
     }
-    const tab = client.addComposerPill({
-      id: TAB_PILL_ID,
+    const Content = (props: PluginButtonContentProps) => (
+      <WorkspacePillPanel
+        {...props}
+        client={client}
+        onNewAgent={(id) => void press(id)}
+        onOpenTab={openTab}
+      />
+    );
+    const pill = client.addComposerPill({
+      id: PILL_ID,
       workspaceId,
       agentId,
       button: {
-        title: TAB_TITLE,
-        label: LABEL_TAB,
-        icon: TAB_ICON,
-        behavior: buildTabMenu({
-          client,
-          workspaceId,
-          agentId,
-          tabs: [],
-          onNewAgent: () => void press(workspaceId),
-          onOpenTab: openTab,
-        }),
+        title: PILL_TITLE,
+        label: LABEL_FALLBACK,
+        icon: PILL_ICON,
+        behavior: { kind: "popover" as const, Content },
       },
     });
-    const statusPill = client.addComposerPill({
-      id: STATUS_PILL_ID,
-      workspaceId,
-      agentId,
-      button: {
-        title: STATUS_TITLE,
-        label: LABEL_STATUS,
-        icon: STATUS_ICON,
-        behavior: {
-          kind: "popover" as const,
-          Content: (props) => <WorkspaceStatusPopover {...props} client={client} openSurface={openPanel} />,
-        },
-      },
-    });
-    pills.set(agentId, [tab, statusPill]);
+    pills.set(agentId, pill);
     applyStatus(agentId);
-    void scheduleOverview(true).then(() => applyStatus(agentId, nextStatus));
+    void scheduleOverview(true).then(() => applyStatus(agentId));
   };
 
-  const tabsFor = (workspaceId: string, currentAgentId: string): WorkspaceTab[] =>
-    overview
-      .filter((row) => row.workspaceId === workspaceId && !row.archived && row.parentAgentId === null)
-      .sort((left, right) => (right.updatedAt ?? "").localeCompare(left.updatedAt ?? ""))
-      .map((row) => ({ id: row.id, title: tabTitle(row), current: row.id === currentAgentId }));
+  const tabsFor = (workspaceId: string): AgentRow[] =>
+    overview.filter(
+      (row) => row.workspaceId === workspaceId && !row.archived && row.parentAgentId === null,
+    );
 
-  const applyStatus = (agentId: string, _status?: string): void => {
-    const registrations = pills.get(agentId);
-    if (!registrations) {
+  const applyStatus = (agentId: string): void => {
+    const registration = pills.get(agentId);
+    if (!registration) {
       return;
     }
     const agent = overview.find((row) => row.id === agentId) ?? null;
     if (!agent || !agent.workspaceId) {
       return;
     }
-    const tabs = tabsFor(agent.workspaceId, agentId);
+    const tabs = tabsFor(agent.workspaceId);
     const holding = overview.filter((row) => row.workspaceId === agent.workspaceId && row.pid !== null);
     const bytes = holding.reduce((sum, row) => sum + (row.rssBytes ?? 0), 0);
-    const signature = [tabs.map((tab) => `${tab.id}:${tab.title}:${tab.current ? 1 : 0}`).join(","), holding.length, bytes].join("|");
+    const signature = `${tabs.length}|${holding.length}|${Math.round(bytes / (1024 * 1024))}`;
     if (signatures.get(agentId) === signature) {
       return;
     }
     signatures.set(agentId, signature);
+    const count = tabs.length;
+    const tabsWord = `${count} tab${count === 1 ? "" : "s"}`;
+    const label = count === 0 ? LABEL_FALLBACK : bytes > 0 ? `${tabsWord} · ${formatMegabytes(bytes)}` : tabsWord;
+    const title =
+      count === 0
+        ? "No open tab in this workspace"
+        : `${tabsWord} · ${holding.length} holding${bytes > 0 ? ` · ${formatBytes(bytes)}` : ""} in this workspace`;
     try {
-      registrations[0]?.update({
-        title: `${tabs.length} tab${tabs.length === 1 ? "" : "s"} in this workspace`,
-        behavior: buildTabMenu({
-          client,
-          workspaceId: agent.workspaceId,
-          agentId,
-          tabs,
-          onNewAgent: () => void press(agent.workspaceId as string),
-          onOpenTab: openTab,
-        }),
-      });
-      registrations[1]?.update({
-        title:
-          holding.length === 0
-            ? "Status · nothing is holding a process"
-            : `Status · ${holding.length} holding · ${formatBytes(bytes)}`,
-      });
+      registration.update({ label, title });
     } catch (error) {
       fail("update the composer pill", error);
     }
@@ -193,6 +198,9 @@ export function contributeComposerPills(client: PluginClientContext): () => void
 
   const openTab = (agentId: string): void => {
     requestAgentFocus(agentId);
+    if (isFocusSurfaceMounted()) {
+      return;
+    }
     try {
       client.openSurface(FOCUS_SURFACE_ID);
     } catch (error) {
@@ -214,7 +222,6 @@ export function contributeComposerPills(client: PluginClientContext): () => void
     overviewTask = (async () => {
       try {
         overview = (await client.rpc(overviewRpc, {})).agents;
-        overviewLoaded = true;
         if (overviewRetry) {
           clearTimeout(overviewRetry);
           overviewRetry = null;
@@ -244,10 +251,9 @@ export function contributeComposerPills(client: PluginClientContext): () => void
   };
 
   const drop = (agentId: string): void => {
-    for (const registration of pills.get(agentId) ?? []) {
-      registration.remove();
-    }
+    pills.get(agentId)?.remove();
     pills.delete(agentId);
+    signatures.delete(agentId);
   };
 
   const track = (entries: readonly AgentLike[]): void => {
@@ -260,7 +266,7 @@ export function contributeComposerPills(client: PluginClientContext): () => void
       }
       live.add(id);
       try {
-        register(id, workspaceId, text(agent?.status) ?? undefined);
+        register(id, workspaceId);
       } catch (error) {
         fail("register the composer pill", error);
       }
@@ -314,12 +320,15 @@ export function contributeComposerPills(client: PluginClientContext): () => void
     if (triggerNewAgentShortcut() || (await openDraftDeepLink(client, workspaceId))) {
       return;
     }
-    pendingRequest = { workspaceId, paseo: client.paseo };
+    requestNewAgent(workspaceId, client.paseo);
+    if (isFocusSurfaceMounted()) {
+      return;
+    }
     try {
       client.openSurface(FOCUS_SURFACE_ID);
     } catch (error) {
       fail("open the session redirect", error);
-      pendingRequest = null;
+      consumeNewAgentRequest();
       await createAgent(workspaceId);
     }
   };
@@ -339,8 +348,8 @@ export function contributeComposerPills(client: PluginClientContext): () => void
       return;
     }
     try {
-      register(agentId, workspaceId, text(payload?.agent?.status) ?? undefined);
-      applyStatus(agentId, text(payload?.agent?.status) ?? undefined);
+      register(agentId, workspaceId);
+      applyStatus(agentId);
     } catch (error) {
       fail("register the composer pill", error);
     }
