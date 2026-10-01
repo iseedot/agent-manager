@@ -102,9 +102,14 @@ Three pill behaviours are in use, which is also a comparison of what the compose
 - `New agent` adapts to its session: while a turn runs it shows an hourglass, is disabled, and its
   tooltip explains why.
 - `Agent Manager` opens a menu: open the panel, release the idle sessions in this workspace, release
-  this session, archive this session.
+  this session, archive this session. The entries carry live counts and disable themselves when there
+  is nothing to do (`Release idle sessions here (2)`).
 - `Memory in this workspace` opens a popover rendering plugin UI: the workspace's session count, how
-  many hold a process and how much memory, the sessions that do, and buttons to release them.
+  many hold a process and how much memory, the sessions that do, and buttons to release them. The pill
+  hides itself when nothing in the workspace holds memory, and its tooltip carries the same numbers.
+
+All of that is kept current from one throttled read of the session list, so a pill never shows a count
+it has not seen.
 
 **⌘K** — `Release other sessions` releases everything in the focused workspace except the current one.
 

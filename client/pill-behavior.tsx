@@ -8,7 +8,12 @@ import { buildStyles } from "./styles";
 
 type Client = PluginClientContext;
 
-export function buildPanelMenu(client: Client, workspaceId: string, agentId: string) {
+export interface PillCounts {
+  idleHere: number;
+  sessionHasProcess: boolean;
+}
+
+export function buildPanelMenu(client: Client, workspaceId: string, agentId: string, counts: PillCounts) {
   return {
     kind: "menu" as const,
     items: [
@@ -21,7 +26,8 @@ export function buildPanelMenu(client: Client, workspaceId: string, agentId: str
       {
         kind: "item" as const,
         id: "release-idle-workspace",
-        title: "Release idle sessions here",
+        title: counts.idleHere > 0 ? `Release idle sessions here (${counts.idleHere})` : "Release idle sessions here",
+        disabled: counts.idleHere === 0,
         behavior: { kind: "action" as const, onPress: () => releaseIdle(client, workspaceId) },
       },
       { kind: "separator" as const, id: "menu-sep" },
@@ -29,6 +35,7 @@ export function buildPanelMenu(client: Client, workspaceId: string, agentId: str
         kind: "item" as const,
         id: "release-session",
         title: "Release this session",
+        disabled: !counts.sessionHasProcess,
         behavior: { kind: "action" as const, onPress: () => releaseAgents(client, [agentId]) },
       },
       {

@@ -1,15 +1,16 @@
 import type { PluginButtonRegistration, PluginClientContext } from "@getpaseo/plugin/client";
 import { Linking } from "react-native";
 
-import { workspacesRpc } from "../shared/contracts";
-import { message } from "./format";
-import { buildPanelMenu, WorkspaceMemoryPopover } from "./pill-behavior";
+import { overviewRpc, workspacesRpc, type AgentRow } from "../shared/contracts";
+import { formatBytes, message } from "./format";
+import { buildPanelMenu, WorkspaceMemoryPopover, type PillCounts } from "./pill-behavior";
 
 const PILL_ID = "new-agent-pill";
 const PANEL_PILL_ID = "agent-manager-pill";
 const MEMORY_PILL_ID = "workspace-memory-pill";
 const PANEL_SURFACE_ID = "agent-manager";
 const PANEL_TITLE = "Agent Manager";
+const OVERVIEW_THROTTLE_MS = 5000;
 const FOCUS_SURFACE_ID = "open-agent";
 const TITLE = "New agent";
 const PILL_LABEL = "";
@@ -54,6 +55,10 @@ export function contributeComposerPills(client: PluginClientContext): () => void
   const busy = new Set<string>();
   let released = false;
   let lastListedAt = 0;
+  let overview: AgentRow[] = [];
+  let lastOverviewAt = 0;
+  let overviewTask: Promise<void> | null = null;
+  const signatures = new Map<string, string>();
 
   const flash = (title: string): void => {
     for (const registrations of pills.values()) {
@@ -104,7 +109,7 @@ export function contributeComposerPills(client: PluginClientContext): () => void
         title: PANEL_TITLE,
         label: PILL_LABEL,
         icon: PANEL_ICON,
-        behavior: buildPanelMenu(client, workspaceId, agentId),
+        behavior: buildPanelMenu(client, workspaceId, agentId, { idleHere: 0, sessionHasProcess: false }),
       },
     });
     const memory = client.addComposerPill({
@@ -125,26 +130,92 @@ export function contributeComposerPills(client: PluginClientContext): () => void
     });
     pills.set(agentId, [registration, panel, memory]);
     applyStatus(agentId, status);
+    void scheduleOverview(true).then(() => applyStatus(agentId, status));
   };
 
-  const applyStatus = (agentId: string, status: string | undefined): void => {
-    if (status === undefined) {
+  const countsFor = (agent: AgentRow): PillCounts => {
+    const here = overview.filter((row) => row.workspaceId === agent.workspaceId);
+    return {
+      idleHere: here.filter((row) => row.pid !== null && row.status !== "running").length,
+      sessionHasProcess: agent.pid !== null,
+    };
+  };
+
+  const applyStatus = (agentId: string, status?: string): void => {
+    const registrations = pills.get(agentId);
+    if (!registrations) {
       return;
     }
-    const registration = pills.get(agentId)?.[0];
-    if (!registration) {
+    const agent = overview.find((row) => row.id === agentId) ?? null;
+    const resolved = status ?? agent?.status ?? undefined;
+    const running = resolved === "running";
+    const counts = agent ? countsFor(agent) : { idleHere: 0, sessionHasProcess: false };
+    const workspaceHolding = agent
+      ? overview.filter((row) => row.workspaceId === agent.workspaceId && row.pid !== null)
+      : [];
+    const signature = [
+      resolved ?? "?",
+      counts.idleHere,
+      counts.sessionHasProcess,
+      workspaceHolding.length,
+      workspaceHolding.reduce((sum, row) => sum + (row.rssBytes ?? 0), 0),
+    ].join("|");
+    if (signatures.get(agentId) === signature) {
       return;
     }
-    const running = status === "running";
+    signatures.set(agentId, signature);
     try {
-      registration.update({
+      registrations[0]?.update({
         icon: running ? BUSY_ICON : ICON,
         disabled: running,
         title: running ? "A turn is running in this session" : TITLE,
       });
+      if (agent) {
+        registrations[1]?.update({ behavior: buildPanelMenu(client, agent.workspaceId ?? "", agentId, counts) });
+        const bytes = workspaceHolding.reduce((sum, row) => sum + (row.rssBytes ?? 0), 0);
+        registrations[2]?.update({
+          visible: workspaceHolding.length > 0,
+          title:
+            workspaceHolding.length === 0
+              ? "Nothing is holding memory in this workspace"
+              : `Memory in this workspace · ${workspaceHolding.length} holding · ${formatBytes(bytes)}`,
+        });
+      }
     } catch (error) {
       fail("update the composer pill", error);
     }
+  };
+
+  const scheduleOverview = (force = false): Promise<void> => {
+    if (released) {
+      return Promise.resolve();
+    }
+    if (overviewTask) {
+      return overviewTask;
+    }
+    if (!force && Date.now() - lastOverviewAt < OVERVIEW_THROTTLE_MS) {
+      return Promise.resolve();
+    }
+    lastOverviewAt = Date.now();
+    overviewTask = (async () => {
+      try {
+        overview = (await client.rpc(overviewRpc, {})).agents;
+      } catch (error) {
+        lastOverviewAt = 0;
+        fail("read session memory", error);
+      }
+      for (const agentId of pills.keys()) {
+        applyStatus(agentId);
+      }
+    })().then(
+      () => {
+        overviewTask = null;
+      },
+      () => {
+        overviewTask = null;
+      },
+    );
+    return overviewTask;
   };
 
   const drop = (agentId: string): void => {
@@ -229,6 +300,7 @@ export function contributeComposerPills(client: PluginClientContext): () => void
   };
 
   void listAgents();
+  void scheduleOverview(true);
   const stopAgents = client.paseo.agents.subscribe((update) => {
     const payload = update as { kind?: unknown; agent?: AgentLike | null; id?: unknown } | null;
     const agentId = text(payload?.agent?.id) ?? text(payload?.id);
