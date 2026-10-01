@@ -13,7 +13,6 @@ const PILL_ICON = "Layers";
 const OVERVIEW_THROTTLE_MS = 5000;
 const OVERVIEW_RETRY_MS = 4000;
 const AGENT_PAGE_LIMIT = 200;
-const REFRESH_THROTTLE_MS = 5000;
 const ERROR_TITLE_MS = 8000;
 
 type Paseo = PluginClientContext["paseo"];
@@ -34,6 +33,12 @@ interface AgentConfig {
   provider: string;
   modeId?: string;
   thinkingOptionId?: string;
+}
+
+interface AgentUpdate {
+  kind?: unknown;
+  agent?: AgentLike | null;
+  agentId?: unknown;
 }
 
 export interface NewAgentRequest {
@@ -101,12 +106,14 @@ export function isFocusSurfaceMounted(): boolean {
 export function contributeComposerPills(client: PluginClientContext): () => void {
   const pills = new Map<string, ReturnType<PluginClientContext["addComposerPill"]>>();
   const busy = new Set<string>();
+  const lifetime = new AbortController();
   let released = false;
-  let lastListedAt = 0;
   let overview: AgentRow[] = [];
   let lastOverviewAt = 0;
   let overviewTask: Promise<void> | null = null;
   let overviewRetry: ReturnType<typeof setTimeout> | null = null;
+  let observation: { release(): Promise<void> } | null = null;
+  let observationRetry: ReturnType<typeof setTimeout> | null = null;
   const signatures = new Map<string, string>();
 
   const flash = (title: string): void => {
@@ -278,19 +285,91 @@ export function contributeComposerPills(client: PluginClientContext): () => void
   };
 
   const listAgents = async (): Promise<void> => {
-    if (released || Date.now() - lastListedAt < REFRESH_THROTTLE_MS) {
+    if (released) {
       return;
     }
-    lastListedAt = Date.now();
     try {
-      const listed = (await client.paseo.agents.list({ page: { limit: AGENT_PAGE_LIMIT } } as never)) as {
-        entries?: { agent?: AgentLike }[];
-      };
-      track((listed.entries ?? []).map((entry) => entry.agent ?? {}));
+      const observed = await client.paseo.agents.list({
+        subscribe: {},
+        page: { limit: AGENT_PAGE_LIMIT },
+        signal: lifetime.signal,
+      } as never);
+      const subscription = (observed as {
+        subscription?: {
+          subscribe: (observer: {
+            snapshot: (snapshot: { entries?: { agent?: AgentLike }[] }) => void;
+            update: (message: { type?: unknown; payload?: unknown }) => void;
+            error: () => void;
+          }) => void;
+          release: () => Promise<void>;
+        };
+      }).subscription;
+      if (!subscription) {
+        throw new Error("The daemon did not return an agent subscription");
+      }
+      if (released) {
+        await subscription.release();
+        return;
+      }
+      observation = subscription;
+      subscription.subscribe({
+        snapshot: (snapshot: { entries?: { agent?: AgentLike }[] }) => {
+          track((snapshot.entries ?? []).map((entry) => entry.agent ?? {}));
+        },
+        update: (message: { type?: unknown; payload?: unknown }) => {
+          if (message?.type !== "agent_update") {
+            return;
+          }
+          applyAgentUpdate(message.payload as AgentUpdate | null);
+        },
+        error: () => {
+          retryObservation();
+        },
+      });
     } catch (error) {
-      lastListedAt = 0;
-      fail("list sessions for the composer pill", error);
+      fail("observe sessions for the composer pill", error);
+      retryObservation();
     }
+  };
+
+  const retryObservation = (): void => {
+    if (released || observationRetry) {
+      return;
+    }
+    observationRetry = setTimeout(() => {
+      observationRetry = null;
+      void listAgents();
+    }, OVERVIEW_RETRY_MS);
+  };
+
+  const applyAgentUpdate = (payload: AgentUpdate | null): void => {
+    if (payload?.kind === "remove") {
+      const id = text(payload.agentId);
+      if (id) {
+        drop(id);
+      }
+      return;
+    }
+    const agent = payload?.agent ?? null;
+    const id = text(agent?.id);
+    if (!id) {
+      return;
+    }
+    if (agent?.archivedAt != null) {
+      drop(id);
+      return;
+    }
+    const workspaceId = text(agent?.workspaceId);
+    if (!workspaceId) {
+      return;
+    }
+    try {
+      register(id, workspaceId);
+      applyStatus(id);
+    } catch (error) {
+      fail("register the composer pill", error);
+    }
+    void scheduleOverview();
   };
 
   const createAgent = async (workspaceId: string): Promise<string | null> => {
@@ -334,33 +413,19 @@ export function contributeComposerPills(client: PluginClientContext): () => void
 
   void listAgents();
   void scheduleOverview(true);
-  const stopAgents = client.paseo.agents.subscribe((update) => {
-    const payload = update as { kind?: unknown; agent?: AgentLike | null; id?: unknown } | null;
-    const agentId = text(payload?.agent?.id) ?? text(payload?.id);
-    const workspaceId = text(payload?.agent?.workspaceId);
-    if (!agentId) {
-      void listAgents();
-      return;
-    }
-    if (payload?.kind === "remove" || payload?.agent?.archivedAt != null || !workspaceId) {
-      drop(agentId);
-      return;
-    }
-    try {
-      register(agentId, workspaceId);
-      applyStatus(agentId);
-    } catch (error) {
-      fail("register the composer pill", error);
-    }
-  });
 
   return () => {
     released = true;
+    lifetime.abort();
     if (overviewRetry) {
       clearTimeout(overviewRetry);
       overviewRetry = null;
     }
-    stopAgents();
+    if (observationRetry) {
+      clearTimeout(observationRetry);
+      observationRetry = null;
+    }
+    void observation?.release().catch(() => {});
     for (const agentId of [...pills.keys()]) {
       drop(agentId);
     }

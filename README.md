@@ -117,8 +117,10 @@ Switching tabs goes through a tiny redirect surface, because a composer pill has
 own. That surface subscribes to focus requests instead of reading one at mount, so a request that arrives
 while it is already mounted — a second pick before the first navigation lands — still switches.
 
-The pill stays current from one throttled read of the session list, and the panel reads a fresh snapshot
-each time it opens, so it never lists a tab that is gone.
+The pill follows the daemon's agent stream: one agent observation is opened when the plugin loads, so a
+session that appears, is restored or is removed gains or loses its pill without a refetch, while the
+state numbers refresh from a throttled overview read at most once every five seconds. The panel reads a
+fresh snapshot each time it opens, so it never lists a tab that is gone.
 
 ## Auto-release
 
