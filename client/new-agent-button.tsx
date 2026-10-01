@@ -14,7 +14,9 @@ const OVERVIEW_THROTTLE_MS = 5000;
 const OVERVIEW_RETRY_MS = 4000;
 const FOCUS_SURFACE_ID = "open-agent";
 const TITLE = "New agent";
-const PILL_LABEL = "";
+const LABEL_NEW = "New";
+const LABEL_PANEL = "Panel";
+const LABEL_MEMORY = "Memory";
 const ICON = "Plus";
 const BUSY_ICON = "Hourglass";
 const PANEL_ICON = "Cpu";
@@ -99,7 +101,7 @@ export function contributeComposerPills(client: PluginClientContext): () => void
       agentId,
       button: {
         title: TITLE,
-        label: PILL_LABEL,
+        label: LABEL_NEW,
         icon: ICON,
         behavior: { kind: "action" as const, onPress: () => void press(workspaceId) },
       },
@@ -110,7 +112,7 @@ export function contributeComposerPills(client: PluginClientContext): () => void
       agentId,
       button: {
         title: PANEL_TITLE,
-        label: PILL_LABEL,
+        label: LABEL_PANEL,
         icon: PANEL_ICON,
         behavior: buildPanelMenu(client, workspaceId, agentId, { idleHere: 0, sessionHasProcess: false }),
       },
@@ -121,7 +123,7 @@ export function contributeComposerPills(client: PluginClientContext): () => void
       agentId,
       button: {
         title: "Memory in this workspace",
-        label: PILL_LABEL,
+        label: LABEL_MEMORY,
         icon: MEMORY_ICON,
         behavior: {
           kind: "popover" as const,

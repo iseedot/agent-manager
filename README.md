@@ -93,9 +93,11 @@ If the host cannot open that link either, it creates the session through the dae
 panel from any session, which is the shortest way in on a phone where the sidebar is a drawer. The same
 thing is in ⌘K as `Open Agent Manager`.
 
-The pills are icon-only: a composer pill shows `label ?? title`, and the host renders nothing at all
-when that value is falsy, so an empty label leaves the icon centred. The title still drives the hover
-tooltip and the accessibility label.
+Composer pills carry a short label: `New`, `Panel`, `Memory`. A pill renders `label ?? title`, and the
+host rejects a `label` that is empty or whitespace (`Plugin button needs label`), so the only way to get
+an icon-only pill is a zero-width space — which passes validation but leaves an invisible text node
+behind and therefore nudges the icon off centre. Short labels are both accepted and aligned, and the
+title still drives the hover tooltip and the accessibility name.
 
 Three pill behaviours are in use, which is also a comparison of what the composer area can carry:
 
