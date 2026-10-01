@@ -105,8 +105,9 @@ Three pill behaviours are in use, which is also a comparison of what the compose
   this session, archive this session. The entries carry live counts and disable themselves when there
   is nothing to do (`Release idle sessions here (2)`).
 - `Memory in this workspace` opens a popover rendering plugin UI: the workspace's session count, how
-  many hold a process and how much memory, the sessions that do, and buttons to release them. The pill
-  hides itself when nothing in the workspace holds memory, and its tooltip carries the same numbers.
+  many hold a process and how much memory, the sessions that do, and buttons to release them. Its tooltip
+  carries the same numbers live, and it stays visible even when nothing holds memory (a pill can hide
+  itself with `visible: false` — the code path is there but off, so the button is never a mystery).
 
 All of that is kept current from one throttled read of the session list, so a pill never shows a count
 it has not seen.

@@ -11,6 +11,7 @@ const MEMORY_PILL_ID = "workspace-memory-pill";
 const PANEL_SURFACE_ID = "agent-manager";
 const PANEL_TITLE = "Agent Manager";
 const OVERVIEW_THROTTLE_MS = 5000;
+const OVERVIEW_RETRY_MS = 4000;
 const FOCUS_SURFACE_ID = "open-agent";
 const TITLE = "New agent";
 const PILL_LABEL = "";
@@ -58,6 +59,8 @@ export function contributeComposerPills(client: PluginClientContext): () => void
   let overview: AgentRow[] = [];
   let lastOverviewAt = 0;
   let overviewTask: Promise<void> | null = null;
+  let overviewLoaded = false;
+  let overviewRetry: ReturnType<typeof setTimeout> | null = null;
   const signatures = new Map<string, string>();
 
   const flash = (title: string): void => {
@@ -160,10 +163,10 @@ export function contributeComposerPills(client: PluginClientContext): () => void
       workspaceHolding.length,
       workspaceHolding.reduce((sum, row) => sum + (row.rssBytes ?? 0), 0),
     ].join("|");
-    if (signatures.get(agentId) === signature) {
+    if (signatures.get(agentId) === `${overviewLoaded ? "1" : "0"}|${signature}`) {
       return;
     }
-    signatures.set(agentId, signature);
+    signatures.set(agentId, `${overviewLoaded ? "1" : "0"}|${signature}`);
     try {
       registrations[0]?.update({
         icon: running ? BUSY_ICON : ICON,
@@ -174,10 +177,10 @@ export function contributeComposerPills(client: PluginClientContext): () => void
         registrations[1]?.update({ behavior: buildPanelMenu(client, agent.workspaceId ?? "", agentId, counts) });
         const bytes = workspaceHolding.reduce((sum, row) => sum + (row.rssBytes ?? 0), 0);
         registrations[2]?.update({
-          visible: workspaceHolding.length > 0,
+          visible: true,
           title:
             workspaceHolding.length === 0
-              ? "Nothing is holding memory in this workspace"
+              ? "Memory in this workspace · nothing is holding a process"
               : `Memory in this workspace · ${workspaceHolding.length} holding · ${formatBytes(bytes)}`,
         });
       }
@@ -200,9 +203,20 @@ export function contributeComposerPills(client: PluginClientContext): () => void
     overviewTask = (async () => {
       try {
         overview = (await client.rpc(overviewRpc, {})).agents;
+        overviewLoaded = true;
+        if (overviewRetry) {
+          clearTimeout(overviewRetry);
+          overviewRetry = null;
+        }
       } catch (error) {
         lastOverviewAt = 0;
         fail("read session memory", error);
+        if (!overviewRetry && !released) {
+          overviewRetry = setTimeout(() => {
+            overviewRetry = null;
+            void scheduleOverview(true);
+          }, OVERVIEW_RETRY_MS);
+        }
       }
       for (const agentId of pills.keys()) {
         applyStatus(agentId);
@@ -323,6 +337,10 @@ export function contributeComposerPills(client: PluginClientContext): () => void
 
   return () => {
     released = true;
+    if (overviewRetry) {
+      clearTimeout(overviewRetry);
+      overviewRetry = null;
+    }
     stopAgents();
     for (const agentId of [...pills.keys()]) {
       drop(agentId);
