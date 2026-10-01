@@ -3,7 +3,7 @@ import { Linking } from "react-native";
 
 import { overviewRpc, workspacesRpc, type AgentRow } from "../shared/contracts";
 import { WorkspacePillPanel } from "./composer-panel";
-import { formatBytes, formatMegabytes, message } from "./format";
+import { message } from "./format";
 
 const PILL_ID = "agent-workspace-pill";
 const FOCUS_SURFACE_ID = "open-agent";
@@ -176,19 +176,18 @@ export function contributeComposerPills(client: PluginClientContext): () => void
     }
     const tabs = tabsFor(agent.workspaceId);
     const holding = overview.filter((row) => row.workspaceId === agent.workspaceId && row.pid !== null);
-    const bytes = holding.reduce((sum, row) => sum + (row.rssBytes ?? 0), 0);
-    const signature = `${tabs.length}|${holding.length}|${Math.round(bytes / (1024 * 1024))}`;
+    const signature = `${tabs.length}|${holding.length}`;
     if (signatures.get(agentId) === signature) {
       return;
     }
     signatures.set(agentId, signature);
     const count = tabs.length;
     const tabsWord = `${count} tab${count === 1 ? "" : "s"}`;
-    const label = count === 0 ? LABEL_FALLBACK : bytes > 0 ? `${tabsWord} · ${formatMegabytes(bytes)}` : tabsWord;
+    const label = count === 0 ? LABEL_FALLBACK : tabsWord;
     const title =
       count === 0
         ? "No open tab in this workspace"
-        : `${tabsWord} · ${holding.length} holding${bytes > 0 ? ` · ${formatBytes(bytes)}` : ""} in this workspace`;
+        : `${tabsWord} · ${holding.length} holding in this workspace`;
     try {
       registration.update({ label, title });
     } catch (error) {

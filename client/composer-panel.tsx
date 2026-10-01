@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { ActivityIndicator, Pressable, Text, View } from "react-native";
 
 import { releaseManyRpc, snapshotRpc, type AgentRow, type SystemStats } from "../shared/contracts";
-import { formatBytes, formatTime, message } from "./format";
+import { formatBytes, formatMemory, formatTime, message } from "./format";
 import { buildStyles, type StyleMap } from "./styles";
 
 type Client = PluginClientContext;
@@ -107,28 +107,20 @@ export function WorkspacePillPanel(props: WorkspacePillPanelProps) {
     }
   };
 
-  const archiveCurrent = async () => {
-    if (!agentId) {
+  const archiveTab = async (agentIdToClose: string) => {
+    if (busy) {
       return;
     }
     setBusy(true);
     setNote(null);
     try {
-      await client.paseo.agents.ref(agentId).archive();
+      await client.paseo.agents.ref(agentIdToClose).archive();
+      await load();
       setNote("Tab closed.");
     } catch (archiveError) {
       setNote(message(archiveError));
     } finally {
       setBusy(false);
-    }
-  };
-
-  const openPanel = () => {
-    close();
-    try {
-      client.openSurface("agent-manager");
-    } catch (openError) {
-      setNote(message(openError));
     }
   };
 
@@ -155,30 +147,50 @@ export function WorkspacePillPanel(props: WorkspacePillPanelProps) {
           {tabs.map((row) => {
             const state = tabState(row);
             const isCurrent = row.id === agentId;
-            const memory = row.pid === null ? state.label : `${state.label} · ${formatBytes(row.rssBytes ?? 0)}`;
+            const memory =
+              row.pid === null ? state.label : `${state.label} · ${formatMemory(row.rssBytes ?? 0)}`;
             return (
-              <Pressable
+              <View
                 key={row.id}
-                accessibilityRole="button"
-                accessibilityState={{ selected: isCurrent, disabled: isCurrent }}
-                disabled={isCurrent}
-                onPress={() => {
-                  close();
-                  onOpenTab(row.id);
-                }}
                 style={[styles.pillTabRow, isCurrent ? styles.pillTabRowCurrent : null]}
               >
-                <View style={[styles.pillTabDot, tabDot(state.tone, styles)]} />
-                <Text
-                  style={[styles.pillTabTitle, isCurrent ? styles.pillTabTitleCurrent : null]}
-                  numberOfLines={1}
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel={`Open ${tabTitle(row)}`}
+                  accessibilityState={{ selected: isCurrent, disabled: isCurrent }}
+                  disabled={isCurrent}
+                  onPress={() => {
+                    close();
+                    onOpenTab(row.id);
+                  }}
+                  style={styles.pillTabOpen}
                 >
-                  {tabTitle(row)}
-                </Text>
-                <Text style={[styles.pillTabMeta, tabMeta(state.tone, styles)]} numberOfLines={1}>
-                  {memory}
-                </Text>
-              </Pressable>
+                  <View style={[styles.pillTabDot, tabDot(state.tone, styles)]} />
+                  <Text
+                    style={[styles.pillTabTitle, isCurrent ? styles.pillTabTitleCurrent : null]}
+                    numberOfLines={1}
+                  >
+                    {tabTitle(row)}
+                  </Text>
+                  <Text style={[styles.pillTabMeta, tabMeta(state.tone, styles)]} numberOfLines={1}>
+                    {memory}
+                  </Text>
+                </Pressable>
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel={`Close ${tabTitle(row)}`}
+                  disabled={busy}
+                  hitSlop={8}
+                  onPress={() => void archiveTab(row.id)}
+                  style={({ hovered, pressed }: { hovered?: boolean; pressed?: boolean }) => [
+                    styles.pillTabClose,
+                    hovered || pressed ? styles.pillTabCloseActive : null,
+                    busy ? styles.disabled : null,
+                  ]}
+                >
+                  <Text style={styles.pillTabCloseText}>×</Text>
+                </Pressable>
+              </View>
             );
           })}
         </View>
@@ -197,19 +209,6 @@ export function WorkspacePillPanel(props: WorkspacePillPanelProps) {
         </Pressable>
         <Pressable
           accessibilityRole="button"
-          disabled={busy || !agentId}
-          style={[
-            styles.button,
-            styles.buttonSmall,
-            styles.pillButton,
-            busy || !agentId ? styles.disabled : null,
-          ]}
-          onPress={() => void archiveCurrent()}
-        >
-          <Text style={styles.buttonText}>Close tab</Text>
-        </Pressable>
-        <Pressable
-          accessibilityRole="button"
           disabled={busy || idle.length === 0}
           style={[
             styles.button,
@@ -220,13 +219,6 @@ export function WorkspacePillPanel(props: WorkspacePillPanelProps) {
           onPress={() => void release()}
         >
           <Text style={styles.buttonText}>Release idle ({idle.length})</Text>
-        </Pressable>
-        <Pressable
-          accessibilityRole="button"
-          style={[styles.button, styles.buttonSmall, styles.pillButton]}
-          onPress={openPanel}
-        >
-          <Text style={styles.buttonText}>Open panel</Text>
         </Pressable>
       </View>
 
@@ -281,13 +273,11 @@ function megabytes(bytes: number): string {
 
 function tabLine(row: AgentRow): string {
   const state = tabState(row);
-  const memory = row.pid === null ? "no runtime" : `${formatBytes(row.rssBytes ?? 0)} · pid ${row.pid}`;
   return [
     state.label,
     `Created ${formatTime(row.createdAt)}`,
     `Updated ${formatTime(row.updatedAt)}`,
     row.lastUserMessageAt ? `Last message ${formatTime(row.lastUserMessageAt)}` : null,
-    memory,
   ]
     .filter((part): part is string => Boolean(part))
     .join(" · ");

@@ -21,6 +21,18 @@ export function formatMegabytes(bytes: number): string {
   return `${Math.round(mb)}M`;
 }
 
+/** Memory held by a runtime, spelled out so a bare "M" is never mistaken for a count. */
+export function formatMemory(bytes: number): string {
+  const mb = bytes / (1024 * 1024);
+  if (mb >= 1024) {
+    return `${(mb / 1024).toFixed(1)} GB`;
+  }
+  if (mb < 10) {
+    return `${mb.toFixed(1)} MB`;
+  }
+  return `${Math.round(mb)} MB`;
+}
+
 export function formatTime(value: string | null): string {
   if (!value) {
     return "—";

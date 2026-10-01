@@ -89,9 +89,8 @@ hosts have no keyboard layer, so it opens the same draft through Paseo's own `pa
 (`?open=draft:…`) — the tab appears instantly and the session is created when the first message is sent.
 If the host cannot open that link either, it creates the session through the daemon and jumps to it.
 
-**Open the panel** — the `Open panel` button in the composer pill panel jumps straight to the Agent
-Manager panel from any session, which is the shortest way in on a phone where the sidebar is a drawer.
-The same thing is in ⌘K as `Open Agent Manager`.
+**Open the panel** — `Open Agent Manager` in ⌘K, or the Agent Manager item in the sidebar. The composer
+pill stays on session work and does not jump there.
 
 A pill renders `label ?? title`, and the host rejects a `label` that is empty or whitespace
 (`Plugin button needs label`), so neither an icon-only pill nor an empty label is possible without a
@@ -99,19 +98,20 @@ zero-width space — which passes validation but leaves an invisible text node b
 the icon off centre. The pill's label therefore always carries live numbers, so it never disappears and
 never looks like a stray icon.
 
-One pill sits above the composer and follows the session it belongs to. Its label is the workspace at a
-glance — `3 tabs · 118M` is the open tab count and the memory their runtimes hold — while the tooltip and
-the accessibility name carry the full sentence. Opening it shows one panel:
+One pill sits above the composer and follows the session it belongs to. Its label carries the open tab
+count (`3 tabs`), the one number the menu is about, so it stays steady instead of chasing memory that
+moves every poll; the memory is in the panel, read when it opens. Opening the pill shows one panel:
 
 - the host line (`load`, `cpu`, `mem`, `swap`),
 - every open tab of this workspace, newest first, each with its state — `running`, `unread` (the turn
   finished and has not been looked at), `needs input` (waiting on a permission), `failed`, `idle` (a
-  runtime is held but nothing is working) or `no runtime` — plus the memory it holds. The current tab is
+  runtime is held but nothing is working) or `no runtime` — plus the memory it holds and a `×` that
+  archives that tab without switching to it first, the current tab included. The current tab is
   highlighted and inert; picking another focuses it through the same navigation the app uses, so it
   switches workspace and tab,
-- `New Agent`, `Close tab` (archives the session, which is what closing a tab does), `Release idle (N)`
-  (stops this workspace's idle runtimes without dropping their tabs or history) and `Open panel`,
-- the current tab's own numbers (`Created … · Updated … · Last message … · memory · pid`).
+- `New Agent` and `Release idle (N)` (stops this workspace's idle runtimes without dropping their tabs or
+  history),
+- the current tab's timestamps (`Created … · Updated … · Last message …`).
 
 Switching tabs goes through a tiny redirect surface, because a composer pill has no navigation of its
 own. That surface subscribes to focus requests instead of reading one at mount, so a request that arrives
