@@ -3,24 +3,26 @@ import { Linking } from "react-native";
 
 import { overviewRpc, workspacesRpc, type AgentRow } from "../shared/contracts";
 import { formatBytes, message } from "./format";
-import { buildPanelMenu, WorkspaceMemoryPopover, type PillCounts } from "./pill-behavior";
+import {
+  buildTabMenu,
+  tabTitle,
+  WorkspaceStatusPopover,
+  type WorkspaceTab,
+} from "./pill-behavior";
 
-const PILL_ID = "new-agent-pill";
-const PANEL_PILL_ID = "agent-manager-pill";
-const MEMORY_PILL_ID = "workspace-memory-pill";
+const TAB_PILL_ID = "agent-tab-pill";
+const STATUS_PILL_ID = "workspace-status-pill";
 const PANEL_SURFACE_ID = "agent-manager";
-const PANEL_TITLE = "Agent Manager";
+const TAB_TITLE = "Tabs";
+const STATUS_TITLE = "Status";
 const OVERVIEW_THROTTLE_MS = 5000;
 const OVERVIEW_RETRY_MS = 4000;
 const FOCUS_SURFACE_ID = "open-agent";
 const TITLE = "New agent";
-const LABEL_NEW = "New";
-const LABEL_PANEL = "Panel";
-const LABEL_MEMORY = "Memory";
-const ICON = "Plus";
-const BUSY_ICON = "Hourglass";
-const PANEL_ICON = "Cpu";
-const MEMORY_ICON = "MemoryStick";
+const LABEL_TAB = "Tab";
+const LABEL_STATUS = "Status";
+const TAB_ICON = "Layers";
+const STATUS_ICON = "Activity";
 const AGENT_PAGE_LIMIT = 200;
 const REFRESH_THROTTLE_MS = 5000;
 const ERROR_TITLE_MS = 8000;
@@ -46,6 +48,17 @@ interface AgentConfig {
 }
 
 let pendingRequest: { workspaceId: string; paseo: Paseo } | null = null;
+let pendingFocus: string | null = null;
+
+export function requestAgentFocus(agentId: string): void {
+  pendingFocus = agentId;
+}
+
+export function consumeAgentFocus(): string | null {
+  const agentId = pendingFocus;
+  pendingFocus = null;
+  return agentId;
+}
 
 export function consumeNewAgentRequest(): { workspaceId: string; paseo: Paseo } | null {
   const request = pendingRequest;
@@ -91,103 +104,99 @@ export function contributeComposerPills(client: PluginClientContext): () => void
     }
   };
 
-  const register = (agentId: string, workspaceId: string, status?: string): void => {
+  const register = (agentId: string, workspaceId: string, nextStatus?: string): void => {
     if (released || pills.has(agentId)) {
       return;
     }
-    const registration = client.addComposerPill({
-      id: PILL_ID,
+    const tab = client.addComposerPill({
+      id: TAB_PILL_ID,
       workspaceId,
       agentId,
       button: {
-        title: TITLE,
-        label: LABEL_NEW,
-        icon: ICON,
-        behavior: { kind: "action" as const, onPress: () => void press(workspaceId) },
+        title: TAB_TITLE,
+        label: LABEL_TAB,
+        icon: TAB_ICON,
+        behavior: buildTabMenu({
+          client,
+          workspaceId,
+          agentId,
+          tabs: [],
+          onNewAgent: () => void press(workspaceId),
+          onOpenTab: openTab,
+        }),
       },
     });
-    const panel = client.addComposerPill({
-      id: PANEL_PILL_ID,
+    const statusPill = client.addComposerPill({
+      id: STATUS_PILL_ID,
       workspaceId,
       agentId,
       button: {
-        title: PANEL_TITLE,
-        label: LABEL_PANEL,
-        icon: PANEL_ICON,
-        behavior: buildPanelMenu(client, workspaceId, agentId, { idleHere: 0, sessionHasProcess: false }),
-      },
-    });
-    const memory = client.addComposerPill({
-      id: MEMORY_PILL_ID,
-      workspaceId,
-      agentId,
-      button: {
-        title: "Memory in this workspace",
-        label: LABEL_MEMORY,
-        icon: MEMORY_ICON,
+        title: STATUS_TITLE,
+        label: LABEL_STATUS,
+        icon: STATUS_ICON,
         behavior: {
           kind: "popover" as const,
-          Content: (props) => (
-            <WorkspaceMemoryPopover {...props} client={client} openSurface={openPanel} />
-          ),
+          Content: (props) => <WorkspaceStatusPopover {...props} client={client} openSurface={openPanel} />,
         },
       },
     });
-    pills.set(agentId, [registration, panel, memory]);
-    applyStatus(agentId, status);
-    void scheduleOverview(true).then(() => applyStatus(agentId, status));
+    pills.set(agentId, [tab, statusPill]);
+    applyStatus(agentId);
+    void scheduleOverview(true).then(() => applyStatus(agentId, nextStatus));
   };
 
-  const countsFor = (agent: AgentRow): PillCounts => {
-    const here = overview.filter((row) => row.workspaceId === agent.workspaceId);
-    return {
-      idleHere: here.filter((row) => row.pid !== null && row.status !== "running").length,
-      sessionHasProcess: agent.pid !== null,
-    };
-  };
+  const tabsFor = (workspaceId: string, currentAgentId: string): WorkspaceTab[] =>
+    overview
+      .filter((row) => row.workspaceId === workspaceId && !row.archived && row.parentAgentId === null)
+      .sort((left, right) => (right.updatedAt ?? "").localeCompare(left.updatedAt ?? ""))
+      .map((row) => ({ id: row.id, title: tabTitle(row), current: row.id === currentAgentId }));
 
-  const applyStatus = (agentId: string, status?: string): void => {
+  const applyStatus = (agentId: string, _status?: string): void => {
     const registrations = pills.get(agentId);
     if (!registrations) {
       return;
     }
     const agent = overview.find((row) => row.id === agentId) ?? null;
-    const resolved = status ?? agent?.status ?? undefined;
-    const running = resolved === "running";
-    const counts = agent ? countsFor(agent) : { idleHere: 0, sessionHasProcess: false };
-    const workspaceHolding = agent
-      ? overview.filter((row) => row.workspaceId === agent.workspaceId && row.pid !== null)
-      : [];
-    const signature = [
-      resolved ?? "?",
-      counts.idleHere,
-      counts.sessionHasProcess,
-      workspaceHolding.length,
-      workspaceHolding.reduce((sum, row) => sum + (row.rssBytes ?? 0), 0),
-    ].join("|");
-    if (signatures.get(agentId) === `${overviewLoaded ? "1" : "0"}|${signature}`) {
+    if (!agent || !agent.workspaceId) {
       return;
     }
-    signatures.set(agentId, `${overviewLoaded ? "1" : "0"}|${signature}`);
+    const tabs = tabsFor(agent.workspaceId, agentId);
+    const holding = overview.filter((row) => row.workspaceId === agent.workspaceId && row.pid !== null);
+    const bytes = holding.reduce((sum, row) => sum + (row.rssBytes ?? 0), 0);
+    const signature = [tabs.map((tab) => `${tab.id}:${tab.title}:${tab.current ? 1 : 0}`).join(","), holding.length, bytes].join("|");
+    if (signatures.get(agentId) === signature) {
+      return;
+    }
+    signatures.set(agentId, signature);
     try {
       registrations[0]?.update({
-        icon: running ? BUSY_ICON : ICON,
-        disabled: running,
-        title: running ? "A turn is running in this session" : TITLE,
+        title: `${tabs.length} tab${tabs.length === 1 ? "" : "s"} in this workspace`,
+        behavior: buildTabMenu({
+          client,
+          workspaceId: agent.workspaceId,
+          agentId,
+          tabs,
+          onNewAgent: () => void press(agent.workspaceId as string),
+          onOpenTab: openTab,
+        }),
       });
-      if (agent) {
-        registrations[1]?.update({ behavior: buildPanelMenu(client, agent.workspaceId ?? "", agentId, counts) });
-        const bytes = workspaceHolding.reduce((sum, row) => sum + (row.rssBytes ?? 0), 0);
-        registrations[2]?.update({
-          visible: true,
-          title:
-            workspaceHolding.length === 0
-              ? "Memory in this workspace · nothing is holding a process"
-              : `Memory in this workspace · ${workspaceHolding.length} holding · ${formatBytes(bytes)}`,
-        });
-      }
+      registrations[1]?.update({
+        title:
+          holding.length === 0
+            ? "Status · nothing is holding a process"
+            : `Status · ${holding.length} holding · ${formatBytes(bytes)}`,
+      });
     } catch (error) {
       fail("update the composer pill", error);
+    }
+  };
+
+  const openTab = (agentId: string): void => {
+    requestAgentFocus(agentId);
+    try {
+      client.openSurface(FOCUS_SURFACE_ID);
+    } catch (error) {
+      fail("open the tab", error);
     }
   };
 

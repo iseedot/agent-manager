@@ -3,17 +3,18 @@ import { useEffect, useRef, useState } from "react";
 import { ActivityIndicator, Linking, Text, View } from "react-native";
 
 import { message } from "./format";
-import { consumeNewAgentRequest, resolveNewAgentConfig } from "./new-agent-button";
+import { consumeAgentFocus, consumeNewAgentRequest, resolveNewAgentConfig } from "./new-agent-button";
 
 const NAVIGATE_RETRY_MS = [400, 1200, 2400];
 
 export function OpenAgentSurface({ navigation, host, theme }: PluginSurfaceProps) {
+  const focus = useRef(consumeAgentFocus()).current;
   const request = useRef(consumeNewAgentRequest()).current;
-  const [agentId, setAgentId] = useState<string | null>(null);
+  const [agentId, setAgentId] = useState<string | null>(focus);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!request) {
+    if (!request || focus) {
       return;
     }
     let cancelled = false;
@@ -38,7 +39,7 @@ export function OpenAgentSurface({ navigation, host, theme }: PluginSurfaceProps
     return () => {
       cancelled = true;
     };
-  }, [request]);
+  }, [request, focus]);
 
   useEffect(() => {
     if (!agentId) {
@@ -65,7 +66,9 @@ export function OpenAgentSurface({ navigation, host, theme }: PluginSurfaceProps
   const text = error
     ? `Could not create the session: ${error}`
     : agentId
-      ? "Opening the new session…"
+      ? focus
+        ? "Switching to the tab…"
+        : "Opening the new session…"
       : "Creating the session…";
 
   return (

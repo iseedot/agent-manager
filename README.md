@@ -99,22 +99,17 @@ an icon-only pill is a zero-width space — which passes validation but leaves a
 behind and therefore nudges the icon off centre. Short labels are both accepted and aligned, and the
 title still drives the hover tooltip and the accessibility name.
 
-Three pill behaviours are in use, which is also a comparison of what the composer area can carry:
+Two pills sit above the composer, and both follow the session they belong to:
 
-- `New agent` adapts to its session: while a turn runs it shows an hourglass, is disabled, and its
-  tooltip explains why.
-- `Agent Manager` opens a menu: open the panel, release the idle sessions in this workspace, release
-  this session, archive this session. The entries carry live counts and disable themselves when there
-  is nothing to do (`Release idle sessions here (2)`).
-- `Memory in this workspace` opens a popover rendering plugin UI: the workspace's session count, how
-  many hold a process and how much memory, the sessions that do, and buttons to release them. Its tooltip
-  carries the same numbers live, and it stays visible even when nothing holds memory (a pill can hide
-  itself with `visible: false` — the code path is there but off, so the button is never a mystery).
+- `Tab` opens a menu built like the tab strip itself: `New Agent` (the app's own new-agent action),
+  `Close Tab` (archives the session, which is what closing a tab does), a separator, then every tab of
+  this workspace — unarchived root sessions, newest first, with the current one marked and inert.
+  Choosing a tab focuses it through the same navigation the app uses, so it switches workspace and tab.
+- `Status` opens a popover with the host numbers (`load`, `cpu`, `mem`, `swap`) on one line, the current
+  tab's numbers on the next (`Created … · Updated … · Last message … · memory · pid`), and a
+  `Release idle (N)` button for every idle runtime in the workspace.
 
-All of that is kept current from one throttled read of the session list, so a pill never shows a count
-it has not seen.
-
-**⌘K** — `Release other sessions` releases everything in the focused workspace except the current one.
+Both stay current from one throttled read of the session list, so a menu never lists a tab that is gone.
 
 ## Auto-release
 
