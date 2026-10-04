@@ -1,6 +1,6 @@
 import { createRequire } from "node:module";
 
-import { readDaemonConfig, resolveDaemonAddress } from "./daemon-mcp";
+import { readDaemonConfig, readLocalCredential, resolveDaemonAddress } from "./daemon-mcp";
 import { describe } from "./util";
 
 declare const require: ((specifier: string) => unknown) | undefined;
@@ -18,20 +18,6 @@ export interface WorkspaceRecoveryState {
   branch?: string | null;
 }
 
-export interface ObservedAgentEntry {
-  agent?: unknown;
-}
-
-export interface OwnedAgentSubscription {
-  readonly ready: Promise<{ entries?: ObservedAgentEntry[] }>;
-  subscribe(observer: {
-    snapshot: (snapshot: { entries?: ObservedAgentEntry[] }) => void;
-    update: (message: unknown) => void;
-    error?: (error: unknown) => void;
-  }): () => void;
-  release(): Promise<void>;
-}
-
 export interface DaemonSessionClient {
   connect(): Promise<void>;
   close(): Promise<void>;
@@ -39,7 +25,6 @@ export interface DaemonSessionClient {
     filter?: { includeArchived?: boolean };
     page?: { limit?: number; cursor?: string };
   }): Promise<{ entries?: unknown }>;
-  observeAgents(options?: { filter?: { includeArchived?: boolean } }): Promise<OwnedAgentSubscription>;
   restoreWorkspace(workspaceId: string, requestId?: string): Promise<void>;
   setWorkspaceTitle(
     workspaceId: string,
@@ -50,12 +35,39 @@ export interface DaemonSessionClient {
   refreshAgent(agentId: string, requestId?: string): Promise<unknown>;
   closeItems(input: { agentIds: string[]; terminalIds: string[] }): Promise<unknown>;
   getDaemonStatus(options?: unknown): Promise<{ serverId?: unknown }>;
+  addProject(cwd: string, requestId?: string): Promise<{ project?: { projectId?: unknown } | null; error?: unknown }>;
+  archiveWorkspace(workspaceId: string, requestId?: string): Promise<unknown>;
+  getCheckoutStatus(
+    cwd: string,
+    options?: { requestId?: string },
+  ): Promise<{
+    git?: { isDirty?: unknown; aheadOfOrigin?: unknown } | null;
+    forge?: { pullRequest?: { isMerged?: unknown; url?: unknown } | null } | null;
+  } | null>;
   listTerminals(
     cwd?: string,
     requestId?: string,
     options?: { workspaceId?: string },
   ): Promise<{ terminals?: Array<Record<string, unknown>> }>;
   killTerminal(terminalId: string, requestId?: string): Promise<unknown>;
+}
+
+/**
+ * Registers a project for a directory and returns its id. Used when a workspace request carries no
+ * projectId, so the workspace is not filed under a project built from the worktree path.
+ */
+export async function registerProject(cwd: string): Promise<string | null> {
+  beginDaemonClientUse();
+  try {
+    const client = await getDaemonClient();
+    const payload = await client.addProject(cwd);
+    const projectId = payload?.project?.projectId;
+    return typeof projectId === "string" && projectId.length > 0 ? projectId : null;
+  } catch {
+    return null;
+  } finally {
+    endDaemonClientUse();
+  }
 }
 
 let cachedServerId: string | null = null;
@@ -85,18 +97,6 @@ interface DaemonClientConstructor {
 let pendingClient: Promise<DaemonSessionClient> | null = null;
 let activeUses = 0;
 let idleTimer: ReturnType<typeof setTimeout> | null = null;
-let held = false;
-
-export function holdDaemonClient(hold: boolean): void {
-  held = hold;
-  if (hold) {
-    cancelIdleClose();
-    return;
-  }
-  if (activeUses === 0) {
-    scheduleIdleClose();
-  }
-}
 
 export function beginDaemonClientUse(): void {
   activeUses += 1;
@@ -113,16 +113,13 @@ export function endDaemonClientUse(): void {
 }
 
 function scheduleIdleClose(): void {
-  if (held) {
-    return;
-  }
   const timeout = idleCloseMs();
   if (timeout <= 0) {
     return;
   }
   idleTimer = setTimeout(() => {
     idleTimer = null;
-    if (activeUses === 0 && !held) {
+    if (activeUses === 0) {
       void disposeDaemonClient();
     }
   }, timeout);
@@ -179,18 +176,35 @@ async function createDaemonClient(): Promise<DaemonSessionClient> {
   }
   const DaemonClient = loadDaemonClientConstructor();
   const config = await readDaemonConfig();
-  const password = process.env.PASEO_PASSWORD?.trim() || config.password;
+  const password = config.password;
   const client = new DaemonClient({
     url: `ws://${address.host}:${address.port}/ws`,
     clientId: `${CLIENT_ID_PREFIX}${randomSuffix()}`,
     clientType: "cli",
+    // Preferred: the loopback credential the daemon rotates on every start. It is read
+    // again for each connection attempt, so a daemon restart (or a daemon password) can
+    // never lock this plugin out of the session protocol. Falls back to PASEO_PASSWORD.
+    localCredential: readLocalCredential,
     appVersion: config.version ?? undefined,
     ...(password ? { password } : {}),
     connectTimeoutMs: 15000,
     reconnect: { enabled: true, baseDelayMs: 500, maxDelayMs: 8000 },
   });
-  await client.connect();
+  try {
+    await client.connect();
+  } catch (error) {
+    throw new Error(`${describe(error)} (${describeAuthHint(password)})`);
+  }
   return client;
+}
+
+function describeAuthHint(password: string | null): string {
+  if (password) {
+    return "authenticated with PASEO_PASSWORD";
+  }
+  return readLocalCredential()
+    ? "authenticated with the local credential file"
+    : "no local credential file found: check that $PASEO_HOME/local-credential exists and matches the running daemon";
 }
 
 function loadDaemonClientConstructor(): DaemonClientConstructor {

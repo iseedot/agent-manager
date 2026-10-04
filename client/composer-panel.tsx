@@ -2,26 +2,52 @@ import type { PluginButtonContentProps, PluginClientContext } from "@getpaseo/pl
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { ActivityIndicator, Pressable, Text, View } from "react-native";
 
-import { releaseManyRpc, snapshotRpc, type AgentRow, type SystemStats } from "../shared/contracts";
-import { formatBytes, formatMemory, formatTime, message } from "./format";
+import { factsRpc, type FactsPayload, type SystemStats } from "../shared/contracts";
+import { useAgentDirectory, type DirectoryAgent } from "./agent-directory";
+import { formatTime, message } from "./format";
+import { dismissGitNotice, runGitNoticeAction, sortNotices, useGitNotices } from "./git-notices";
 import { buildStyles, type StyleMap } from "./styles";
 
 type Client = PluginClientContext;
 
-export type WorkspacePillPanelProps = PluginButtonContentProps & {
+const MAX_VISIBLE_NOTICES = 2;
+
+/**
+ * A client only picks up plugin code when it refetches the catalog, so a phone can keep running an
+ * older bundle. The stamp is derived from the code that is actually executing here, which makes a
+ * stale client obvious when compared with a freshly built one.
+ */
+const UI_STAMP: string = (() => {
+  let hash = 0;
+  const sources = [WorkspacePillPanel, tabState, tabTitle, buildStyles, formatTime].map((value) => {
+    try {
+      return String(value);
+    } catch {
+      return "";
+    }
+  });
+  for (const source of sources) {
+    for (let index = 0; index < source.length; index += 1) {
+      hash = (hash * 31 + source.charCodeAt(index)) % 0xffffffff;
+    }
+  }
+  return hash.toString(36).slice(0, 6);
+})();
+
+type WorkspacePillPanelProps = PluginButtonContentProps & {
   client: Client;
   onNewAgent: (workspaceId: string) => void;
   onOpenTab: (agentId: string) => void;
 };
 
-export type TabStateTone = "running" | "unread" | "input" | "failed" | "idle";
+type TabStateTone = "running" | "unread" | "input" | "failed" | "idle";
 
-export interface TabState {
+interface TabState {
   label: string;
   tone: TabStateTone;
 }
 
-export function tabState(row: AgentRow): TabState {
+function tabState(row: DirectoryAgent): TabState {
   if (row.attentionReason === "permission") {
     return { label: "needs input", tone: "input" };
   }
@@ -34,13 +60,13 @@ export function tabState(row: AgentRow): TabState {
   if (row.attentionReason === "finished") {
     return { label: "unread", tone: "unread" };
   }
-  if (row.pid !== null) {
+  if (row.status !== "closed") {
     return { label: "idle", tone: "idle" };
   }
   return { label: "no runtime", tone: "idle" };
 }
 
-export function tabTitle(row: AgentRow): string {
+function tabTitle(row: DirectoryAgent): string {
   const title = row.title?.trim();
   const text = title && title.length > 0 ? title : row.id.slice(0, 7);
   return text.length > 44 ? `${text.slice(0, 43)}…` : text;
@@ -51,17 +77,17 @@ export function WorkspacePillPanel(props: WorkspacePillPanelProps) {
   const workspaceId = props.workspaceId;
   const agentId = props.context === "agent" ? props.agentId : null;
   const { styles, tones } = useMemo(() => buildStyles(theme, layout.compact), [theme, layout.compact]);
-  const [agents, setAgents] = useState<AgentRow[] | null>(null);
-  const [system, setSystem] = useState<SystemStats | null>(null);
+  const agents = useAgentDirectory();
+  const notices = useGitNotices();
+  const [facts, setFacts] = useState<FactsPayload | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [busyNotice, setBusyNotice] = useState<number | null>(null);
 
-  const load = useCallback(async () => {
+  const loadFacts = useCallback(async () => {
     try {
-      const snapshot = await client.rpc(snapshotRpc, {});
-      setAgents(snapshot.overview.agents);
-      setSystem(snapshot.system);
+      setFacts(await client.rpc(factsRpc, {}));
       setError(null);
     } catch (loadError) {
       setError(message(loadError));
@@ -69,43 +95,25 @@ export function WorkspacePillPanel(props: WorkspacePillPanelProps) {
   }, [client]);
 
   useEffect(() => {
-    void load();
-  }, [load]);
+    void loadFacts();
+  }, [loadFacts]);
 
+  const workspaceAgents = useMemo(
+    () => agents.filter((row) => row.workspaceId === workspaceId && row.archivedAt === null),
+    [agents, workspaceId],
+  );
   const tabs = useMemo(
     () =>
-      (agents ?? [])
-        .filter((row) => row.workspaceId === workspaceId && !row.archived && row.parentAgentId === null)
+      workspaceAgents
+        .filter((row) => row.parentAgentId === null)
         .sort((left, right) => (right.updatedAt ?? "").localeCompare(left.updatedAt ?? "")),
-    [agents, workspaceId],
+    [workspaceAgents],
   );
-  const current = useMemo(
-    () => (agents ?? []).find((row) => row.id === agentId) ?? null,
-    [agents, agentId],
+  const current = useMemo(() => agents.find((row) => row.id === agentId) ?? null, [agents, agentId]);
+  const terminal = useMemo(
+    () => facts?.terminals.find((row) => row.workspaceId === workspaceId) ?? null,
+    [facts, workspaceId],
   );
-  const holding = useMemo(
-    () => (agents ?? []).filter((row) => row.workspaceId === workspaceId && row.pid !== null),
-    [agents, workspaceId],
-  );
-  const heldBytes = holding.reduce((sum, row) => sum + (row.rssBytes ?? 0), 0);
-  const idle = holding.filter((row) => row.status !== "running").map((row) => row.id);
-
-  const release = async () => {
-    if (busy || idle.length === 0) {
-      return;
-    }
-    setBusy(true);
-    setNote(null);
-    try {
-      const result = await client.rpc(releaseManyRpc, { agentIds: idle, allowSignalFallback: true });
-      await load();
-      setNote(`Released ${result.released.length} · ${formatBytes(result.freedBytes)}`);
-    } catch (releaseError) {
-      setNote(message(releaseError));
-    } finally {
-      setBusy(false);
-    }
-  };
 
   const archiveTab = async (agentIdToClose: string) => {
     if (busy) {
@@ -115,7 +123,6 @@ export function WorkspacePillPanel(props: WorkspacePillPanelProps) {
     setNote(null);
     try {
       await client.paseo.agents.ref(agentIdToClose).archive();
-      await load();
       setNote("Tab closed.");
     } catch (archiveError) {
       setNote(message(archiveError));
@@ -127,28 +134,96 @@ export function WorkspacePillPanel(props: WorkspacePillPanelProps) {
   return (
     <View style={styles.pillPanel}>
       <Text style={styles.pillHost} numberOfLines={2}>
-        {system ? systemLine(system) : "reading host…"}
+        {facts ? systemLine(facts.system) : "reading host…"}
       </Text>
+      <Text style={styles.hint} numberOfLines={1}>
+        {terminal
+          ? `${terminal.count} terminal${terminal.count === 1 ? "" : "s"}${terminal.working > 0 ? ` · ${terminal.working} working` : ""}${terminal.waiting > 0 ? ` · ${terminal.waiting} waiting` : ""}`
+          : "No terminals"}
+      </Text>
+
+      {notices.length > 0 ? (
+        <View style={styles.pillNote}>
+          <Text style={styles.pillLabel}>NOTICES</Text>
+          {sortNotices(notices)
+            .slice(0, MAX_VISIBLE_NOTICES)
+            .map((notice) => (
+              <View key={notice.id} style={styles.noticeBlock}>
+                <View style={styles.pillTabRow}>
+                  <Text style={styles.hint} numberOfLines={1}>
+                    {notice.title}
+                  </Text>
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel="Dismiss notice"
+                    hitSlop={8}
+                    onPress={() => dismissGitNotice(notice.id)}
+                    style={styles.pillTabClose}
+                  >
+                    <Text style={styles.pillTabCloseText}>×</Text>
+                  </Pressable>
+                </View>
+                {notice.actions && notice.actions.length > 0 ? (
+                  <View style={styles.actionsGrid}>
+                    {notice.actions.map((action) => (
+                      <Pressable
+                        key={action.id}
+                        accessibilityRole="button"
+                        disabled={busyNotice !== null}
+                        onPress={() => {
+                          setBusyNotice(notice.id);
+                          setNote(null);
+                          void runGitNoticeAction(notice.id, action.id)
+                            .then((failure) => {
+                              if (failure) setNote(failure);
+                            })
+                            .finally(() => setBusyNotice(null));
+                        }}
+                        style={({ hovered, pressed }: { hovered?: boolean; pressed?: boolean }) => [
+                          styles.button,
+                          styles.buttonSmall,
+                          action.tone === "danger" ? styles.buttonDanger : null,
+                          action.tone === "primary" ? styles.buttonPrimary : null,
+                          hovered || pressed ? styles.buttonHover : null,
+                          busyNotice !== null ? styles.disabled : null,
+                        ]}
+                      >
+                        <Text
+                          style={
+                            action.tone === "danger" || action.tone === "primary"
+                              ? styles.buttonTextOn
+                              : styles.buttonText
+                          }
+                        >
+                          {action.label}
+                        </Text>
+                      </Pressable>
+                    ))}
+                  </View>
+                ) : null}
+              </View>
+            ))}
+
+          {notices.length > MAX_VISIBLE_NOTICES ? (
+            <Text style={styles.hint}>{notices.length - MAX_VISIBLE_NOTICES} more</Text>
+          ) : null}
+        </View>
+      ) : null}
 
       <View style={styles.pillHead}>
         <Text style={styles.pillLabel}>TABS</Text>
         <Text style={styles.pillCount} numberOfLines={1}>
           {tabs.length} tab{tabs.length === 1 ? "" : "s"}
-          {heldBytes > 0 ? ` · ${formatBytes(heldBytes)} held` : ""}
         </Text>
       </View>
 
-      {agents === null ? (
-        <ActivityIndicator color={tones.accent} size="small" />
-      ) : tabs.length === 0 ? (
+      {tabs.length === 0 ? (
         <Text style={styles.hint}>No open tab in this workspace.</Text>
       ) : (
         <View style={styles.pillTabs}>
           {tabs.map((row) => {
             const state = tabState(row);
             const isCurrent = row.id === agentId;
-            const memory =
-              row.pid === null ? state.label : `${state.label} · ${formatMemory(row.rssBytes ?? 0)}`;
             return (
               <View
                 key={row.id}
@@ -173,7 +248,7 @@ export function WorkspacePillPanel(props: WorkspacePillPanelProps) {
                     {tabTitle(row)}
                   </Text>
                   <Text style={[styles.pillTabMeta, tabMeta(state.tone, styles)]} numberOfLines={1}>
-                    {memory}
+                    {state.label}
                   </Text>
                 </Pressable>
                 <Pressable
@@ -207,19 +282,6 @@ export function WorkspacePillPanel(props: WorkspacePillPanelProps) {
         >
           <Text style={styles.buttonTextOn}>New Agent</Text>
         </Pressable>
-        <Pressable
-          accessibilityRole="button"
-          disabled={busy || idle.length === 0}
-          style={[
-            styles.button,
-            styles.buttonSmall,
-            styles.pillButton,
-            busy || idle.length === 0 ? styles.disabled : null,
-          ]}
-          onPress={() => void release()}
-        >
-          <Text style={styles.buttonText}>Release idle ({idle.length})</Text>
-        </Pressable>
       </View>
 
       {current ? (
@@ -233,6 +295,7 @@ export function WorkspacePillPanel(props: WorkspacePillPanelProps) {
 
       {busy ? <ActivityIndicator color={tones.accent} size="small" /> : null}
       {note || error ? <Text style={styles.hint}>{note ?? error}</Text> : null}
+      <Text style={styles.buildStamp}>ui {UI_STAMP}</Text>
     </View>
   );
 }
@@ -271,7 +334,7 @@ function megabytes(bytes: number): string {
   return mb >= 1024 ? `${(mb / 1024).toFixed(1)}G` : `${Math.round(mb)}M`;
 }
 
-function tabLine(row: AgentRow): string {
+function tabLine(row: DirectoryAgent): string {
   const state = tabState(row);
   return [
     state.label,

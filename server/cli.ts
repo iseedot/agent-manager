@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 
 import { paseoHome } from "./daemon-mcp";
 
-export interface CliResult {
+interface CliResult {
   ok: boolean;
   output: string;
 }

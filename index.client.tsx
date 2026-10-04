@@ -1,23 +1,18 @@
 import type { PluginClientContext } from "@getpaseo/plugin/client";
 
-import { registerReleaseCommands } from "./client/commands";
+import { startAgentDirectory } from "./client/agent-directory";
+import { startGitNotices } from "./client/git-notices";
 import { contributeComposerPills } from "./client/new-agent-button";
 import { OpenAgentSurface } from "./client/open-agent-surface";
-import { AgentManagerPanel } from "./client/panel";
 
 export default function contribute(client: PluginClientContext) {
-  client.addSurface("agent-manager", AgentManagerPanel);
+  const stopAgentDirectory = startAgentDirectory(client);
+  const stopGitNotices = startGitNotices(client);
   client.addSurface("open-agent", OpenAgentSurface);
-  client.addSidebarItem({
-    id: "agent-manager",
-    title: "Agent Manager",
-    icon: "Cpu",
-    surface: "agent-manager",
-  });
-  const unregisterCommands = registerReleaseCommands(client);
   const removeComposerPills = contributeComposerPills(client);
   return () => {
     removeComposerPills();
-    unregisterCommands();
+    stopGitNotices();
+    stopAgentDirectory();
   };
 }

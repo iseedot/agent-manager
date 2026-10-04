@@ -1,44 +1,29 @@
 import type { PluginButtonContentProps, PluginClientContext } from "@getpaseo/plugin/client";
 import { Linking } from "react-native";
 
-import { overviewRpc, workspacesRpc, type AgentRow } from "../shared/contracts";
+import { workspacesRpc } from "../shared/contracts";
+import { agentDirectoryStore, type DirectoryAgent } from "./agent-directory";
 import { WorkspacePillPanel } from "./composer-panel";
 import { message } from "./format";
+import {
+  gitNoticeWarning,
+  gitNoticesSnapshot,
+  subscribeGitNotices,
+} from "./git-notices";
 
 const PILL_ID = "agent-workspace-pill";
 const FOCUS_SURFACE_ID = "open-agent";
 const PILL_TITLE = "Tabs and status";
 const LABEL_FALLBACK = "Tabs";
 const PILL_ICON = "Layers";
-const OVERVIEW_THROTTLE_MS = 5000;
-const OVERVIEW_RETRY_MS = 4000;
-const AGENT_PAGE_LIMIT = 200;
 const ERROR_TITLE_MS = 8000;
 
 type Paseo = PluginClientContext["paseo"];
-
-interface AgentLike {
-  id?: unknown;
-  status?: unknown;
-  workspaceId?: unknown;
-  archivedAt?: unknown;
-  provider?: unknown;
-  model?: unknown;
-  currentModeId?: unknown;
-  thinkingOptionId?: unknown;
-  runtimeInfo?: { modeId?: unknown; thinkingOptionId?: unknown } | null;
-}
 
 interface AgentConfig {
   provider: string;
   modeId?: string;
   thinkingOptionId?: string;
-}
-
-interface AgentUpdate {
-  kind?: unknown;
-  agent?: AgentLike | null;
-  agentId?: unknown;
 }
 
 export interface NewAgentRequest {
@@ -60,7 +45,7 @@ function emitRequest(): void {
   }
 }
 
-export function requestAgentFocus(agentId: string): void {
+function requestAgentFocus(agentId: string): void {
   pendingFocus = agentId;
   emitRequest();
 }
@@ -71,7 +56,7 @@ export function consumeAgentFocus(): string | null {
   return agentId;
 }
 
-export function requestNewAgent(workspaceId: string, paseo: Paseo): void {
+function requestNewAgent(workspaceId: string, paseo: Paseo): void {
   pendingRequest = { workspaceId, paseo };
   emitRequest();
 }
@@ -99,21 +84,37 @@ export function unmarkFocusSurfaceMounted(): void {
   mountedFocusSurfaces = Math.max(0, mountedFocusSurfaces - 1);
 }
 
-export function isFocusSurfaceMounted(): boolean {
+function isFocusSurfaceMounted(): boolean {
   return mountedFocusSurfaces > 0;
+}
+
+interface AgentIndex {
+  byId: Map<string, DirectoryAgent>;
+  tabsByWorkspace: Map<string, DirectoryAgent[]>;
+}
+
+function indexAgents(): AgentIndex {
+  const byId = new Map<string, DirectoryAgent>();
+  const tabsByWorkspace = new Map<string, DirectoryAgent[]>();
+  for (const agent of agentDirectoryStore.getSnapshot()) {
+    byId.set(agent.id, agent);
+    if (agent.archivedAt !== null || agent.parentAgentId !== null || !agent.workspaceId) {
+      continue;
+    }
+    const list = tabsByWorkspace.get(agent.workspaceId);
+    if (list) {
+      list.push(agent);
+    } else {
+      tabsByWorkspace.set(agent.workspaceId, [agent]);
+    }
+  }
+  return { byId, tabsByWorkspace };
 }
 
 export function contributeComposerPills(client: PluginClientContext): () => void {
   const pills = new Map<string, ReturnType<PluginClientContext["addComposerPill"]>>();
   const busy = new Set<string>();
-  const lifetime = new AbortController();
   let released = false;
-  let overview: AgentRow[] = [];
-  let lastOverviewAt = 0;
-  let overviewTask: Promise<void> | null = null;
-  let overviewRetry: ReturnType<typeof setTimeout> | null = null;
-  let observation: { release(): Promise<void> } | null = null;
-  let observationRetry: ReturnType<typeof setTimeout> | null = null;
   const signatures = new Map<string, string>();
 
   const flash = (title: string): void => {
@@ -125,9 +126,10 @@ export function contributeComposerPills(client: PluginClientContext): () => void
       }
     }
     setTimeout(() => {
+      const index = indexAgents();
       for (const agentId of [...pills.keys()]) {
         signatures.delete(agentId);
-        applyStatus(agentId);
+        applyStatus(agentId, index);
       }
     }, ERROR_TITLE_MS);
   };
@@ -163,38 +165,36 @@ export function contributeComposerPills(client: PluginClientContext): () => void
       },
     });
     pills.set(agentId, pill);
-    applyStatus(agentId);
-    void scheduleOverview(true).then(() => applyStatus(agentId));
   };
 
-  const tabsFor = (workspaceId: string): AgentRow[] =>
-    overview.filter(
-      (row) => row.workspaceId === workspaceId && !row.archived && row.parentAgentId === null,
-    );
-
-  const applyStatus = (agentId: string): void => {
+  const applyStatus = (agentId: string, index?: AgentIndex): void => {
     const registration = pills.get(agentId);
     if (!registration) {
       return;
     }
-    const agent = overview.find((row) => row.id === agentId) ?? null;
-    if (!agent || !agent.workspaceId) {
+    const resolved = index ?? indexAgents();
+    const agent = resolved.byId.get(agentId);
+    if (!agent?.workspaceId) {
       return;
     }
-    const tabs = tabsFor(agent.workspaceId);
-    const holding = overview.filter((row) => row.workspaceId === agent.workspaceId && row.pid !== null);
-    const signature = `${tabs.length}|${holding.length}`;
+    const tabs = resolved.tabsByWorkspace.get(agent.workspaceId) ?? [];
+    const running = tabs.filter((row) => row.status === "running").length;
+    const gitWarning = gitNoticeWarning(gitNoticesSnapshot());
+    const signature = `${tabs.length}|${running}|${gitWarning ?? ""}`;
     if (signatures.get(agentId) === signature) {
       return;
     }
     signatures.set(agentId, signature);
     const count = tabs.length;
     const tabsWord = `${count} tab${count === 1 ? "" : "s"}`;
-    const label = count === 0 ? LABEL_FALLBACK : tabsWord;
-    const title =
+    const label = `${count === 0 ? LABEL_FALLBACK : tabsWord}${gitWarning ? " ⚠" : ""}`;
+    const baseTitle =
       count === 0
         ? "No open tab in this workspace"
-        : `${tabsWord} · ${holding.length} holding in this workspace`;
+        : running > 0
+          ? `${tabsWord} · ${running} running in this workspace`
+          : `${tabsWord} in this workspace`;
+    const title = gitWarning ? `${baseTitle} · ⚠ ${gitWarning}` : baseTitle;
     try {
       registration.update({ label, title });
     } catch (error) {
@@ -214,65 +214,25 @@ export function contributeComposerPills(client: PluginClientContext): () => void
     }
   };
 
-  const scheduleOverview = (force = false): Promise<void> => {
-    if (released) {
-      return Promise.resolve();
-    }
-    if (overviewTask) {
-      return overviewTask;
-    }
-    if (!force && Date.now() - lastOverviewAt < OVERVIEW_THROTTLE_MS) {
-      return Promise.resolve();
-    }
-    lastOverviewAt = Date.now();
-    overviewTask = (async () => {
-      try {
-        overview = (await client.rpc(overviewRpc, {})).agents;
-        if (overviewRetry) {
-          clearTimeout(overviewRetry);
-          overviewRetry = null;
-        }
-      } catch (error) {
-        lastOverviewAt = 0;
-        fail("read session memory", error);
-        if (!overviewRetry && !released) {
-          overviewRetry = setTimeout(() => {
-            overviewRetry = null;
-            void scheduleOverview(true);
-          }, OVERVIEW_RETRY_MS);
-        }
-      }
-      for (const agentId of pills.keys()) {
-        applyStatus(agentId);
-      }
-    })().then(
-      () => {
-        overviewTask = null;
-      },
-      () => {
-        overviewTask = null;
-      },
-    );
-    return overviewTask;
-  };
-
   const drop = (agentId: string): void => {
     pills.get(agentId)?.remove();
     pills.delete(agentId);
     signatures.delete(agentId);
   };
 
-  const track = (entries: readonly AgentLike[]): void => {
+  const sync = (): void => {
+    if (released) {
+      return;
+    }
+    const index = indexAgents();
     const live = new Set<string>();
-    for (const agent of entries) {
-      const id = text(agent?.id);
-      const workspaceId = text(agent?.workspaceId);
-      if (!id || !workspaceId || agent?.archivedAt != null) {
+    for (const agent of index.byId.values()) {
+      if (agent.archivedAt !== null || !agent.workspaceId) {
         continue;
       }
-      live.add(id);
+      live.add(agent.id);
       try {
-        register(id, workspaceId);
+        register(agent.id, agent.workspaceId);
       } catch (error) {
         fail("register the composer pill", error);
       }
@@ -282,95 +242,14 @@ export function contributeComposerPills(client: PluginClientContext): () => void
         drop(id);
       }
     }
-  };
-
-  const listAgents = async (): Promise<void> => {
-    if (released) {
-      return;
-    }
-    try {
-      const observed = await client.paseo.agents.list({
-        subscribe: {},
-        page: { limit: AGENT_PAGE_LIMIT },
-        signal: lifetime.signal,
-      } as never);
-      const subscription = (observed as {
-        subscription?: {
-          subscribe: (observer: {
-            snapshot: (snapshot: { entries?: { agent?: AgentLike }[] }) => void;
-            update: (message: { type?: unknown; payload?: unknown }) => void;
-            error: () => void;
-          }) => void;
-          release: () => Promise<void>;
-        };
-      }).subscription;
-      if (!subscription) {
-        throw new Error("The daemon did not return an agent subscription");
-      }
-      if (released) {
-        await subscription.release();
-        return;
-      }
-      observation = subscription;
-      subscription.subscribe({
-        snapshot: (snapshot: { entries?: { agent?: AgentLike }[] }) => {
-          track((snapshot.entries ?? []).map((entry) => entry.agent ?? {}));
-        },
-        update: (message: { type?: unknown; payload?: unknown }) => {
-          if (message?.type !== "agent_update") {
-            return;
-          }
-          applyAgentUpdate(message.payload as AgentUpdate | null);
-        },
-        error: () => {
-          retryObservation();
-        },
-      });
-    } catch (error) {
-      fail("observe sessions for the composer pill", error);
-      retryObservation();
+    for (const id of [...pills.keys()]) {
+      applyStatus(id, index);
     }
   };
 
-  const retryObservation = (): void => {
-    if (released || observationRetry) {
-      return;
-    }
-    observationRetry = setTimeout(() => {
-      observationRetry = null;
-      void listAgents();
-    }, OVERVIEW_RETRY_MS);
-  };
-
-  const applyAgentUpdate = (payload: AgentUpdate | null): void => {
-    if (payload?.kind === "remove") {
-      const id = text(payload.agentId);
-      if (id) {
-        drop(id);
-      }
-      return;
-    }
-    const agent = payload?.agent ?? null;
-    const id = text(agent?.id);
-    if (!id) {
-      return;
-    }
-    if (agent?.archivedAt != null) {
-      drop(id);
-      return;
-    }
-    const workspaceId = text(agent?.workspaceId);
-    if (!workspaceId) {
-      return;
-    }
-    try {
-      register(id, workspaceId);
-      applyStatus(id);
-    } catch (error) {
-      fail("register the composer pill", error);
-    }
-    void scheduleOverview();
-  };
+  const unsubscribe = agentDirectoryStore.subscribe(sync);
+  const unsubscribeNotices = subscribeGitNotices(sync);
+  sync();
 
   const createAgent = async (workspaceId: string): Promise<string | null> => {
     if (released || busy.has(workspaceId)) {
@@ -411,21 +290,10 @@ export function contributeComposerPills(client: PluginClientContext): () => void
     }
   };
 
-  void listAgents();
-  void scheduleOverview(true);
-
   return () => {
     released = true;
-    lifetime.abort();
-    if (overviewRetry) {
-      clearTimeout(overviewRetry);
-      overviewRetry = null;
-    }
-    if (observationRetry) {
-      clearTimeout(observationRetry);
-      observationRetry = null;
-    }
-    void observation?.release().catch(() => {});
+    unsubscribeNotices();
+    unsubscribe();
     for (const agentId of [...pills.keys()]) {
       drop(agentId);
     }
@@ -494,7 +362,7 @@ async function recentChoice(paseo: Paseo, workspaceId: string): Promise<AgentCon
   const listed = (await paseo.agents.list({
     filter: { workspaceId, includeArchived: true },
     page: { limit: 20 },
-  } as never)) as unknown as { entries?: { agent?: AgentLike }[] };
+  } as never)) as unknown as { entries?: { agent?: Record<string, unknown> }[] };
   for (const entry of listed.entries ?? []) {
     const agent = entry?.agent;
     const provider = text(agent?.provider);
@@ -502,8 +370,9 @@ async function recentChoice(paseo: Paseo, workspaceId: string): Promise<AgentCon
     if (!provider || !model) {
       continue;
     }
-    const modeId = text(agent?.currentModeId) ?? text(agent?.runtimeInfo?.modeId);
-    const thinkingOptionId = text(agent?.thinkingOptionId) ?? text(agent?.runtimeInfo?.thinkingOptionId);
+    const runtimeInfo = agent?.runtimeInfo as { modeId?: unknown; thinkingOptionId?: unknown } | undefined;
+    const modeId = text(agent?.currentModeId) ?? text(runtimeInfo?.modeId);
+    const thinkingOptionId = text(agent?.thinkingOptionId) ?? text(runtimeInfo?.thinkingOptionId);
     return {
       provider: `${provider}/${model}`,
       ...(modeId ? { modeId } : {}),

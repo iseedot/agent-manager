@@ -1,5 +1,9 @@
 import { str } from "./util";
 
+export interface PaseoLike {
+  agents: { list(options?: unknown): Promise<{ entries?: unknown; pageInfo?: unknown }> };
+}
+
 export interface AgentRecord {
   id: string;
   title: string | null;
@@ -19,7 +23,7 @@ export interface AgentRecord {
   cwd: string | null;
 }
 
-export interface AgentPage {
+interface AgentPage {
   entries?: unknown;
   pageInfo?: unknown;
 }
@@ -48,12 +52,15 @@ interface RawAgent {
 const PAGE_SIZE = 200;
 const MAX_PAGES = 25;
 
-export async function listAllAgents(list: AgentLister): Promise<AgentRecord[]> {
+export async function listAllAgents(
+  list: AgentLister,
+  options: { includeArchived?: boolean } = {},
+): Promise<AgentRecord[]> {
   const agents: AgentRecord[] = [];
   let cursor: string | undefined;
   for (let page = 0; page < MAX_PAGES; page += 1) {
     const result = await list({
-      filter: { includeArchived: true },
+      filter: { includeArchived: options.includeArchived ?? true },
       sort: [{ key: "updated_at", direction: "desc" }],
       page: cursor ? { limit: PAGE_SIZE, cursor } : { limit: PAGE_SIZE },
     });

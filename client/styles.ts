@@ -1,4 +1,4 @@
-export interface PaletteLike {
+interface PaletteLike {
   surface0: string;
   surface1: string;
   surface2: string;
@@ -11,22 +11,13 @@ export interface PaletteLike {
   statusDanger: string;
 }
 
-export interface ThemeLike {
+interface ThemeLike {
   colors: PaletteLike;
 }
 
 export type StyleMap = Record<string, any>;
-export type FactTone = "quiet" | "accent" | "ok" | "warn" | "danger";
 
-export interface TerminalInfo {
-  count: number;
-  busy: number;
-  working: number;
-  idle: number;
-  rssBytes: number;
-}
-
-export interface Tones {
+interface Tones {
   accent: string;
   ok: string;
   warn: string;
@@ -102,7 +93,10 @@ function hsl(h: number, s: number, l: number): string {
   return `hsl(${Math.round(h)}, ${Math.round(s * 100)}%, ${Math.round(l * 100)}%)`;
 }
 
-function readable(color: string, options: { minSaturation: number; lightness: number; fallbackHue: number }): string {
+function readable(
+  color: string,
+  options: { minSaturation: number; lightness: number; fallbackHue: number },
+): string {
   const rgb = parseColor(color);
   if (!rgb) {
     return hsl(options.fallbackHue, options.minSaturation, options.lightness);
@@ -112,7 +106,7 @@ function readable(color: string, options: { minSaturation: number; lightness: nu
   return hsl(hue, Math.max(s, options.minSaturation), options.lightness);
 }
 
-export function buildTones(input: {
+function buildTones(input: {
   surface0: string;
   accent: string;
   statusSuccess: string;
@@ -124,35 +118,21 @@ export function buildTones(input: {
   return {
     accent: readable(input.accent, { minSaturation: 0.5, lightness: bodyLightness, fallbackHue: 212 }),
     ok: readable(input.statusSuccess, { minSaturation: 0.45, lightness: bodyLightness, fallbackHue: 142 }),
-    warn: readable(input.statusWarning, { minSaturation: 0.55, lightness: dark ? 0.66 : 0.42, fallbackHue: 35 }),
+    warn: readable(input.statusWarning, {
+      minSaturation: 0.55,
+      lightness: dark ? 0.66 : 0.42,
+      fallbackHue: 35,
+    }),
     danger: readable(input.statusDanger, { minSaturation: 0.5, lightness: bodyLightness, fallbackHue: 5 }),
     onAccent: dark ? "#10151c" : "#ffffff",
   };
 }
 
-export interface TreeMetrics {
-  chevron: number;
-}
-
-export interface TreeRowProfile {
-  paddingVertical: number;
-  gap: number;
-  titleLine: number;
-  titleLineSmall: number;
-  factsLine: number;
-}
-
-export function treeRowProfile(compact: boolean): TreeRowProfile {
-  return compact
-    ? { paddingVertical: 6, gap: 1, titleLine: 16, titleLineSmall: 15, factsLine: 14 }
-    : { paddingVertical: 8, gap: 2, titleLine: 18, titleLineSmall: 17, factsLine: 16 };
-}
-
-export function treeMetrics(compact: boolean): TreeMetrics {
-  return { chevron: compact ? 11 : 8 };
-}
-
-export function buildStyles(theme: ThemeLike, compact: boolean): { styles: StyleMap; tones: Tones } {
+/** Styles for the composer pill and its popover — the only UI this plugin renders. */
+export function buildStyles(
+  theme: ThemeLike,
+  _compact: boolean,
+): { styles: StyleMap; tones: Tones } {
   const palette = theme.colors;
   const tones = buildTones({
     surface0: palette.surface0,
@@ -161,165 +141,13 @@ export function buildStyles(theme: ThemeLike, compact: boolean): { styles: Style
     statusWarning: palette.statusWarning,
     statusDanger: palette.statusDanger,
   });
-  const tree = treeMetrics(compact);
-  const row = treeRowProfile(compact);
   const styles: StyleMap = {
-    screen: { flex: 1, backgroundColor: palette.surface0, padding: compact ? 12 : 18 },
-    headline: { color: palette.foreground, fontSize: compact ? 15 : 16, fontWeight: "600" as const },
-    subline: { color: palette.foregroundMuted, fontSize: 12, flexShrink: 1, lineHeight: 17 },
-    hero: {
-      borderRadius: 10,
-      borderWidth: 1,
-      borderColor: palette.border,
-      backgroundColor: palette.surface1,
-      padding: compact ? 10 : 12,
-      gap: 6,
-    },
-    heroActions: {
-      flexDirection: "row" as const,
-      flexWrap: "wrap" as const,
-      alignItems: "center" as const,
-      justifyContent: "space-between" as const,
-      gap: 8,
-      marginTop: 2,
-    },
-    heroSettingsLabel: { flexDirection: "row" as const, alignItems: "center" as const, gap: 6 },
-    heroSettingsHint: { color: palette.foregroundMuted, fontSize: 11, flexShrink: 1, flexGrow: 1 },
-    heroButtons: {
-      flexDirection: "row" as const,
-      gap: 8,
-      marginLeft: "auto" as const,
-      flexBasis: compact ? ("100%" as const) : undefined,
-      justifyContent: "flex-end" as const,
-    },
-    settingsPanel: {
-      borderWidth: 1,
-      borderColor: palette.border,
-      borderRadius: 10,
-      backgroundColor: palette.surface1,
-      padding: compact ? 10 : 12,
-      gap: 10,
-      marginTop: 10,
-    },
-    dot: { width: 7, height: 7, borderRadius: 4 },
-    dotOk: { backgroundColor: tones.ok },
-    dotWarn: { backgroundColor: tones.warn },
-    dotMuted: { backgroundColor: palette.foregroundMuted, opacity: 0.5 },
-    body: {
-      flex: 1,
-      flexDirection: compact ? ("column" as const) : ("row" as const),
-      gap: 12,
-      marginTop: 12,
-    },
-    pane: {
-      borderWidth: 1,
-      borderColor: palette.border,
-      borderRadius: 10,
-      backgroundColor: palette.surface1,
-      overflow: "hidden" as const,
-      flex: 1,
-    },
-    paneTree: {
-      borderWidth: 1,
-      borderColor: palette.border,
-      borderRadius: 10,
-      backgroundColor: palette.surface1,
-      overflow: "hidden" as const,
-      flexGrow: 0,
-      flexShrink: 0,
-      flexBasis: 330,
-    },
-    paneScroll: { flex: 1 },
-    paneContent: { padding: compact ? 8 : 10, gap: 2 },
-    treeRow: {
-      position: "relative" as const,
-      borderRadius: 8,
-      borderWidth: 0.5,
-      borderColor: "transparent",
-      paddingRight: 8,
-      paddingLeft: 0,
-      overflow: "hidden" as const,
-    },
-    treeRowProject: {
-      backgroundColor: palette.surface2,
-      borderColor: palette.border,
-      marginTop: 3,
-      marginBottom: 1,
-    },
-    treeRowNested: { backgroundColor: alpha(palette.foreground, 0.05) },
-    treeRowSelected: { borderColor: tones.accent, backgroundColor: palette.surface2 },
-    treeRowArchived: { opacity: 0.72 },
-    treeBar: {
-      width: tree.chevron,
-      alignSelf: "stretch" as const,
-      alignItems: "center" as const,
-      justifyContent: "center" as const,
-    },
-    treeBarProject: { backgroundColor: tones.accent },
-    treeBarWorkspace: { backgroundColor: alpha(palette.foregroundMuted, 0.3) },
-    treeBarLabel: { fontSize: compact ? 10 : 8 },
-    treeBarLabelProject: { color: tones.onAccent },
-    treeBarLabelWorkspace: { color: palette.foreground },
-    treeBarSpacer: { width: tree.chevron },
-    treeRowBody: { flexDirection: "row" as const, flex: 1, gap: 4 },
-    treeRowContent: {
-      flex: 1,
-      gap: row.gap,
-      justifyContent: "center" as const,
-      paddingVertical: row.paddingVertical,
-    },
-    treeRowInner: { flexDirection: "row" as const, alignItems: "center" as const, gap: 6 },
-    treeLabel: {
-      color: palette.foreground,
-      fontSize: 13,
-      lineHeight: row.titleLine,
-      fontWeight: "600" as const,
-      flexShrink: 1,
-    },
-    treeLabelProject: {
-      fontSize: 12,
-      lineHeight: row.titleLineSmall,
-      fontWeight: "700" as const,
-      letterSpacing: 0.2,
-    },
-    treeLabelWorkspace: { fontSize: 13, lineHeight: row.titleLine, fontWeight: "600" as const },
-    treeLabelAgent: { fontSize: 12.5, lineHeight: row.titleLineSmall, fontWeight: "500" as const },
-    treeLabelArchived: { color: palette.foregroundMuted, fontWeight: "500" as const },
-    treeFacts: { color: palette.foregroundMuted, fontSize: 11, lineHeight: row.factsLine },
-    treeCountBadge: {
-      minWidth: 22,
-      height: 18,
-      paddingHorizontal: 6,
-      borderRadius: 9,
-      alignItems: "center" as const,
-      justifyContent: "center" as const,
-      backgroundColor: palette.surface1,
-      borderWidth: 1,
-      borderColor: palette.border,
-    },
-    treeCountText: { color: palette.foregroundMuted, fontSize: 10.5, fontWeight: "600" as const },
     factAccent: { color: tones.accent, fontWeight: "600" as const },
     factOk: { color: tones.ok },
     factWarn: { color: tones.warn },
     factDanger: { color: tones.danger },
-    actionsPaneContent: { padding: compact ? 12 : 14, gap: 10 },
-    actionsHead: { gap: 4 },
-    actionsTitle: { color: palette.foreground, fontSize: compact ? 15 : 16, fontWeight: "600" as const },
-    actionsSub: { color: palette.foregroundMuted, fontSize: 12, lineHeight: 17 },
-    actionsKind: { color: palette.foregroundMuted, fontSize: 10, letterSpacing: 0.8, fontWeight: "600" as const },
     actionsGrid: { flexDirection: "row" as const, flexWrap: "wrap" as const, gap: 8, marginTop: 4 },
     hint: { color: palette.foregroundMuted, fontSize: 11, lineHeight: 16 },
-    infoRow: { flexDirection: "row" as const, gap: 8, alignItems: "baseline" as const },
-    infoLabel: { color: palette.foregroundMuted, fontSize: 11, width: 74 },
-    infoValue: { color: palette.foreground, fontSize: 12, flexShrink: 1, lineHeight: 17 },
-    divider: { height: 1, backgroundColor: palette.border, marginVertical: 4 },
-    terminalRow: {
-      flexDirection: "row" as const,
-      alignItems: "center" as const,
-      gap: 8,
-      paddingVertical: 4,
-    },
-    terminalText: { flex: 1, gap: 1 },
     button: {
       minHeight: 34,
       justifyContent: "center" as const,
@@ -332,89 +160,11 @@ export function buildStyles(theme: ThemeLike, compact: boolean): { styles: Style
     },
     buttonPrimary: { backgroundColor: tones.accent, borderColor: tones.accent },
     buttonDanger: { backgroundColor: tones.danger, borderColor: tones.danger },
-    buttonHalf: { flexBasis: "48%" as const, flexGrow: 1 },
+    buttonHover: { borderColor: tones.accent },
     buttonSmall: { minHeight: 28, paddingHorizontal: 10 },
     buttonText: { color: palette.foreground, fontSize: 12 },
     buttonTextOn: { color: tones.onAccent, fontSize: 12 },
     disabled: { opacity: 0.45 },
-    confirm: {
-      borderWidth: 1,
-      borderColor: tones.danger,
-      borderRadius: 10,
-      backgroundColor: palette.surface2,
-      padding: 10,
-      gap: 8,
-    },
-    confirmText: { color: palette.foreground, fontSize: 12, lineHeight: 17 },
-    renamePanel: { borderWidth: 1, borderColor: tones.accent, borderRadius: 8, padding: 10, gap: 8 },
-    renameInput: {
-      minHeight: 36,
-      borderRadius: 8,
-      borderWidth: 1,
-      borderColor: palette.border,
-      backgroundColor: palette.surface2,
-      color: palette.foreground,
-      paddingHorizontal: 10,
-      fontSize: 13,
-    },
-    autoRow: {
-      flexDirection: compact ? ("column" as const) : ("row" as const),
-      flexWrap: "wrap" as const,
-      alignItems: compact ? ("stretch" as const) : ("center" as const),
-      justifyContent: "space-between" as const,
-      gap: compact ? 6 : 12,
-    },
-    autoLabel: { color: palette.foreground, fontSize: 12, flexShrink: 1 },
-    autoDivider: { height: 1, backgroundColor: palette.border, opacity: 0.6 },
-    autoStatus: { color: palette.foregroundMuted, fontSize: 11, lineHeight: 16 },
-    autoStatusWarn: { color: tones.danger, fontSize: 11, lineHeight: 16 },
-    segment: {
-      flexDirection: "row" as const,
-      flexShrink: 1,
-      alignSelf: compact ? ("stretch" as const) : ("auto" as const),
-      borderRadius: 8,
-      borderWidth: 1,
-      borderColor: palette.border,
-      overflow: "hidden" as const,
-    },
-    segmentItem: {
-      flexGrow: 1,
-      minHeight: 30,
-      paddingHorizontal: compact ? 6 : 12,
-      justifyContent: "center" as const,
-      alignItems: "center" as const,
-      borderLeftWidth: 1,
-      borderLeftColor: palette.border,
-    },
-    segmentItemFirst: { borderLeftWidth: 0 },
-    segmentItemActive: { backgroundColor: tones.accent },
-    segmentText: { color: palette.foregroundMuted, fontSize: 12 },
-    segmentTextActive: { color: tones.onAccent, fontSize: 12, fontWeight: "600" as const },
-    chip: {
-      minHeight: 28,
-      paddingHorizontal: 10,
-      justifyContent: "center" as const,
-      alignItems: "center" as const,
-      borderRadius: 8,
-      borderWidth: 1,
-      borderColor: palette.border,
-      backgroundColor: palette.surface1,
-    },
-    chipOn: { backgroundColor: tones.accent, borderColor: tones.accent },
-    chipText: { color: palette.foreground, fontSize: 11 },
-    chipTextOn: { color: tones.onAccent, fontSize: 11, fontWeight: "600" as const },
-    warning: { color: tones.warn, fontSize: 12, lineHeight: 17 },
-    empty: { color: palette.foregroundMuted, fontSize: 13, paddingVertical: 16, paddingHorizontal: 8 },
-    footer: {
-      color: palette.foreground,
-      fontSize: 11,
-      lineHeight: 16,
-      padding: 10,
-      borderRadius: 8,
-      borderWidth: 1,
-      borderColor: palette.border,
-      backgroundColor: palette.surface1,
-    },
     pillPanel: { gap: 8 },
     pillHost: { color: palette.foregroundMuted, fontSize: 11, lineHeight: 16 },
     pillHead: {
@@ -472,32 +222,13 @@ export function buildStyles(theme: ThemeLike, compact: boolean): { styles: Style
     pillTabDotInput: { backgroundColor: tones.warn },
     pillTabDotFailed: { backgroundColor: tones.danger },
     pillTabDotMuted: { backgroundColor: palette.foregroundMuted, opacity: 0.5 },
-    pillTabTitle: {
-      color: palette.foreground,
-      fontSize: 12.5,
-      flexGrow: 1,
-      flexShrink: 1,
-    },
+    pillTabTitle: { color: palette.foreground, fontSize: 12.5, flexGrow: 1, flexShrink: 1 },
     pillTabTitleCurrent: { fontWeight: "600" as const },
     pillTabMeta: { color: palette.foregroundMuted, fontSize: 11, flexShrink: 0 },
     pillButton: { flexBasis: "48%" as const, flexGrow: 1 },
-    pillNote: {
-      gap: 2,
-      borderTopWidth: 1,
-      borderTopColor: palette.border,
-      paddingTop: 8,
-    },
+    pillNote: { gap: 2, borderTopWidth: 1, borderTopColor: palette.border, paddingTop: 8 },
+    noticeBlock: { gap: 2 },
     buildStamp: { color: palette.foregroundMuted, fontSize: 10, opacity: 0.8 },
-    footerRow: { gap: 8, marginTop: 10 },
-    jobRow: { marginTop: 8 },
   };
   return { styles, tones };
-}
-
-export function factStyle(tone: FactTone, styles: StyleMap): StyleMap[string] {
-  if (tone === "accent") return styles.factAccent;
-  if (tone === "ok") return styles.factOk;
-  if (tone === "warn") return styles.factWarn;
-  if (tone === "danger") return styles.factDanger;
-  return undefined;
 }

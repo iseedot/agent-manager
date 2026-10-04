@@ -1,140 +1,129 @@
 # paseo-agent-manager
 
-A Paseo plugin that shows what a host is holding in memory and lets you take it back: every session
-that keeps a process alive, grouped by project and workspace, with release / archive / restore / delete
-for sessions, workspaces and whole projects. Idle runtimes are released automatically.
+A Paseo plugin with four jobs:
 
-## What it looks like
+1. **Composer pill** — one pill above the composer that shows the open tabs of the current workspace
+   and lets you switch, close or open one.
+2. **Per-project worktrees** — a worktree workspace is checked out at `<project>/.worktrees/<slug>`
+   instead of Paseo's global worktrees root, so every project keeps its checkouts to itself.
+3. **Project git bootstrap** — before Paseo provisions a workspace, an empty project directory gets
+   `git init` plus one empty commit, so worktree workspaces work right away. Existing repositories and
+   non-empty directories are never touched.
+4. **Auto-release** — idle agent runtimes are released automatically, whether or not the app is open.
 
-```
-4 workspaces · 3 active
-host.lan · 27 records · 5 unarchived (4 no runtime) · 22 archived
-1 holding · 118 MB · load 0.42 · cpu 7% · mem 611M/961M · swap 155M/3.0G
-[● Settings ▶]  idle 10m · last sweep 20m ago · 2 released · next in 9m   [Refresh] [Release idle (1)]
-┌──────────────────────────────┬──────────────────────────────────────────────┐
-│▶ ▎project-a         2        │ WORKSPACE · paseo                            │
-│▼ ▏workspace-name    5        │ /srv/project-a                               │
-│     main · 2 holding · 210 MB│ main · 2 holding · 210 MB · 5 unarchived      │
-│     session title            │ [Open in app] [Release idle (2)]             │
-│     running · 132 MB · pid 7 │ [Release running (1)] [Reopen archived (1)]  │
-│     ↳ sub-agent               │ [Close open tabs (5)] [Close terminals (2)]  │
-│     no runtime · 20h ago     │ [Archive workspace] [Rename workspace…]      │
-│▼ ▏old-workspace (archived) 0 │                                              │
-│▶ ▎No workspace         1     │                                              │
-└──────────────────────────────┴──────────────────────────────────────────────┘
-```
+The manager panel is gone; the plugin no longer ships a sidebar entry, a surface or any workspace /
+session management actions.
 
-Rows are flat — nothing is indented, so long titles keep the full width. The expand arrow *is* the level
-marker: one slim bar hugging the left edge and spanning the row's full height, filled by level (accent
-for a project, a translucent grey for a workspace, nothing at all for a session) with the arrow glyph
-inside it. Row density follows the screen: tight on a phone, roomier on desktop, so both stay
-comfortable to read and to tap. Selecting a row
-outlines it in the accent colour. Each row carries one secondary line of live numbers, aligned with its
-title and starting with the session state (`running` / `idle` / `no runtime` / `error`).
-
-- One tree on the left (project → workspace → session), the actions for the selection on the right.
-  Phones get list → detail with a `Back` button.
-- Every row carries live numbers on one line: which sessions keep a process alive, that memory,
-  running count, terminals with their directory and state, provider, labels, last activity.
-- `Settings` is collapsed by default and holds the view filter and the auto-release switches.
-- Paseo hands a plugin exactly eleven colours (`surface0` / `surface1` / `surface2`, `border`,
-  `foreground`, `foregroundMuted`, `accent`, `accentForeground`, `statusSuccess`, `statusWarning`,
-  `statusDanger`) and nothing else. The panel re-tones the ones it paints with so they stay legible on
-  both light and dark themes, which is why the colours in the panel are not the raw theme values.
-
-## Terms
-
-| Shown | Means |
-| --- | --- |
-| `records` | every session record on this host, archived included |
-| `unarchived` | the record is not archived, so Paseo may keep it in the tab strip |
-| `no runtime` | nothing is running for that session right now (released, or the daemon restarted). The record, its history and its tab stay, and the next message starts a process again |
-| `archived` | archived: Paseo keeps the record and history but takes it out of the tab strip |
-| `holding` | sessions that currently keep an OS process alive, and the memory they use |
-
-Only `running` and `idle` sessions hold memory. A `closed`/`no runtime` session holds none, and
-`archived` sessions hold none either. Unarchived + archived = records; `no runtime` is a subset of
-unarchived.
-
-Paseo keeps which tab you have open, hidden or scrolled out of view in the app itself, so no plugin can
-reproduce the tab strip exactly. `Unarchived (N)` is the closest honest equivalent: it is exactly the set
-Paseo is allowed to show as tabs. The switch lives in Settings and applies to the whole tree — archived
-workspaces disappear from it too, not just archived sessions.
-
-## Actions
-
-**Session** — `Open tab` focuses it in the app. `Release process` stops its runtime and frees the memory
-while the tab and history stay. `Archive session` takes it out of the tab strip, `Restore session` puts
-it back, `Delete session…` removes the record and its history for good (asks first).
-
-**Workspace** — `Open in app`. `Release idle (N)` stops the runtimes that are not working; `Release
-running (N)` also interrupts the ones that are (asks first). `Reopen archived tabs (N)` brings back the
-tabs the workspace had when it was archived: they load once so the app can show their content, then the
-idle timer closes them again. `Close open tabs (N)` closes every tab and frees the same memory.
-`Close terminals (N)` names the terminals first if something might be running. `Archive workspace` hides
-the workspace with everything it owns (an empty one is removed on the spot instead), `Rename
-workspace…` sets the name Paseo shows — archived or not. An archived workspace offers `Restore
-workspace`, `Rename workspace…` and `Delete workspace`.
-
-**Project** — `Release idle (N)` and `Release running (N)` for everything under one project, or for
-sessions whose workspace record is gone (they appear under `No workspace`). `Release idle (N)` in the
-header does the same for the whole host.
-
-**Terminals** — listed per workspace and one row each, with the daemon's own state (`working`,
-`waiting at a prompt`, or `not reporting activity`) and a `Close` button per terminal.
-
-**New agent** — in the composer pill panel. Desktop and web: it fires Paseo's own new-agent action, the one
-behind the tab bar `+` menu and `Ctrl+Shift+A` / `Cmd+Shift+A`, so the usual draft tab opens. Native
-hosts have no keyboard layer, so it opens the same draft through Paseo's own `paseo:` deep link
-(`?open=draft:…`) — the tab appears instantly and the session is created when the first message is sent.
-If the host cannot open that link either, it creates the session through the daemon and jumps to it.
-
-**Open the panel** — `Open Agent Manager` in ⌘K, or the Agent Manager item in the sidebar. The composer
-pill stays on session work and does not jump there.
-
-A pill renders `label ?? title`, and the host rejects a `label` that is empty or whitespace
-(`Plugin button needs label`), so neither an icon-only pill nor an empty label is possible without a
-zero-width space — which passes validation but leaves an invisible text node behind and therefore nudges
-the icon off centre. The pill's label therefore always carries live numbers, so it never disappears and
-never looks like a stray icon.
+## The composer pill
 
 One pill sits above the composer and follows the session it belongs to. Its label carries the open tab
-count (`3 tabs`), the one number the menu is about, so it stays steady instead of chasing memory that
-moves every poll; the memory is in the panel, read when it opens. Opening the pill shows one panel:
+count (`3 tabs`), the one number the menu is about, plus `⚠` when Paseo recorded a project notice.
+Opening the pill shows:
 
-- the host line (`load`, `cpu`, `mem`, `swap`),
+- the host line (`load`, `cpu`, `mem`, `swap`) and this workspace's terminal count,
+- **NOTICES**, when there are any: one short line each (`<name> · what happened`, e.g.
+  `hardcore-dingo · worktree ready`, `dirty-monkey · uncommitted changes — remove?`), newest and most
+  actionable first, two at most, each with a `×` that dismisses it and buttons when a decision is
+  needed (`Remove worktree` / `Keep it`). The long explanation goes to the plugin log
+  (`paseo plugin logs agent-manager`), never to the popover. Informational notes stay in the popover;
+  only warnings, errors and notes with buttons mark the pill with `⚠`,
 - every open tab of this workspace, newest first, each with its state — `running`, `unread` (the turn
   finished and has not been looked at), `needs input` (waiting on a permission), `failed`, `idle` (a
-  runtime is held but nothing is working) or `no runtime` — plus the memory it holds and a `×` that
-  archives that tab without switching to it first, the current tab included. The current tab is
-  highlighted and inert; picking another focuses it through the same navigation the app uses, so it
-  switches workspace and tab,
-- `New Agent` and `Release idle (N)` (stops this workspace's idle runtimes without dropping their tabs or
-  history),
-- the current tab's timestamps (`Created … · Updated … · Last message …`).
+  runtime is held but nothing is working) or `no runtime` — and a `×` that archives that tab without
+  switching to it first, the current tab included. The current tab is highlighted and inert; picking
+  another focuses it through the same navigation the app uses, so it switches workspace and tab,
+- `New Agent`,
+- the current tab's timestamps (`Created … · Updated … · Last message …`) and the `ui <code>` build
+  stamp.
+
+**New agent** fires Paseo's own new-agent action on desktop and web — the one behind the tab bar `+`
+menu and `Ctrl+Shift+A` / `Cmd+Shift+A` — so the usual draft tab opens. Native hosts have no keyboard
+layer, so it opens the same draft through Paseo's own `paseo:` deep link (`?open=draft:…`); the tab
+appears instantly and the session is created when the first message is sent. If the host cannot open
+that link either, it creates the session through the daemon and jumps to it.
 
 Switching tabs goes through a tiny redirect surface, because a composer pill has no navigation of its
-own. That surface subscribes to focus requests instead of reading one at mount, so a request that arrives
-while it is already mounted — a second pick before the first navigation lands — still switches.
+own. That surface subscribes to focus requests instead of reading one at mount, so a request that
+arrives while it is already mounted — a second pick before the first navigation lands — still switches.
 
 The pill follows the daemon's agent stream: one agent observation is opened when the plugin loads, so a
-session that appears, is restored or is removed gains or loses its pill without a refetch, while the
-state numbers refresh from a throttled overview read at most once every five seconds. The panel reads a
-fresh snapshot each time it opens, so it never lists a tab that is gone.
+session that appears, is restored or is removed gains or loses its pill without a refetch. Its counts
+and states come from that stream; the popover adds one small host-metrics call when it opens. Notices
+are polled once a minute. Paseo rejects a `label` that is empty or whitespace
+(`Plugin button needs label`), so the label always carries numbers and never looks like a stray icon.
+
+## Per-project worktrees
+
+Paseo builds its managed worktrees under `$PASEO_HOME/worktrees/<project-hash>/<slug>` and no
+configuration can move that per project. This plugin takes the request over in the `workspace.create`
+before hook instead:
+
+1. it creates the worktree with plain git at **`<project>/.worktrees/<slug>`** (branch off
+   `baseBranch`/HEAD, or check out `refName` when the request checks out an existing branch),
+2. it makes sure the project ignores that directory — `git check-ignore` decides, and when the path is
+   not ignored yet it appends `/<relative path>/.worktrees/` to the repository's `.gitignore`,
+3. it hands Paseo a directory request for the new path, filed under the project that owns the
+   repository (the request's `projectId`, else the project registered for the repo root, else it
+   registers one).
+
+Paseo still recognises the checkout as a worktree (branch, main repo root), but it is not
+Paseo-owned, so archiving the workspace never deletes it blindly. Instead:
+
+| The worktree is… | On workspace archive |
+| --- | --- |
+| clean (no uncommitted changes) | removed automatically, exactly like Paseo's own worktrees, and a one-line note says so |
+| holding uncommitted changes | kept, and the pill asks: `Remove worktree` (refused while dirty) → `Force remove` (deletes them) or `Keep it` |
+
+The branch keeps the commits either way; only uncommitted work can be lost, which is why that is the
+only case that asks. `Keep it` leaves the checkout in place so restoring the workspace reopens it
+as-is.
+
+Two Paseo behaviours come with the takeover:
+
+- **`paseo.json` scripts** — `worktree.setup` runs in the background right after the checkout is
+  created (the create hook has a 30 s budget, so it never blocks), and `worktree.teardown` runs before
+  the worktree is deleted. Commands get Paseo's own environment
+  (`PASEO_ROOT_PATH`, `PASEO_WORKTREE_PATH`, `PASEO_BRANCH_NAME`, `PASEO_SOURCE_CHECKOUT_PATH`);
+  a failure becomes a one-line note, never a blocked workspace.
+- **Archiving merged work** — Paseo does this only for its own worktrees, so the plugin repeats the
+  check every 15 minutes for project-local ones: change request merged, nothing uncommitted, nothing
+  unpushed → the workspace is archived (its tabs close) and the clean worktree is removed.
+
+The plugin steps aside — Paseo's own behavior applies — when the request is not a `worktree`
+isolation, when it checks out a change request (`checkoutSource`/`githubPrNumber`), when git is
+unavailable, when the directory has no repository or no commit yet (the notice says so), or when the
+target path or the branch already exists. In those cases a warning notice explains the fallback.
+
+## Project git bootstrap
+
+Registered as the plugin's `workspace.create` before hook, so it runs before Paseo provisions anything
+and always passes the request through unchanged.
+
+| The project directory is… | What happens |
+| --- | --- |
+| not a directory | nothing |
+| already a repository (cloned, added, or created by hand) | nothing |
+| inside another repository (a subdirectory of a checkout) | nothing — no nested repository |
+| a repository without any commit | a notice: worktrees need a commit (`git commit --allow-empty -m init`) |
+| non-empty without a repository | nothing — an existing folder is never turned into a repository |
+| empty without a repository | `git init` (branch `main`) plus one empty commit as `Paseo <paseo@localhost>` |
+| any of the above, on a host without git | a notice, once the directory is empty or already a repository |
+
+Notices are recorded on the daemon, shown in the pill popover and printed to the plugin log. Nothing is
+ever retried, and the plugin never edits or removes project content. Adding a project without creating a
+workspace triggers nothing at all: the hook only runs when a workspace is actually created.
 
 ## Auto-release
 
-A session is released once it has been idle for the chosen timer (default 10 minutes; a freshly loaded
-session always gets its full window) unless it is waiting on a permission. This runs off the daemon's
-agent stream with a periodic safety sweep, so it keeps working while the app is closed.
+A session is released once it has been idle for 10 minutes unless it is waiting on a permission. A
+15-minute safety sweep scans the host and releases everything past its window; when the earliest window
+closes sooner, a single timer wakes the sweep at that moment. It keeps working while the app is closed.
 
-`Close idle terminals` (off by default) extends the sweep to terminals and only uses positive evidence:
-either the daemon reports the terminal as idle for the whole timer, or — for terminals that never report
-activity — the process in it is still a plain shell with no children and nothing running, watched for
-that whole window. A terminal running a program (an editor, a REPL, an agent CLI) is never closed on its
-own.
+Archived workspaces with no session records are removed by the sweep. There are no auto-release knobs:
+the plugin keeps only the last sweep result in `~/.paseo/agent-manager/auto-release.json`.
 
-Settings live in the plugin's Settings section and in `~/.paseo/agent-manager/auto-release.json`.
+Releasing goes through the daemon's own close action (MCP `kill_agent`), so the record stays valid and
+the next message resumes it.
 
 ## Install
 
@@ -143,31 +132,12 @@ paseo plugin install https://github.com/iseedot/agent-manager
 paseo plugin update agent-manager --yes     # later
 ```
 
-`"pluginsEnabled": true` in the daemon `config.json`, then `paseo reload`. The panel is **Agent
-Manager** in the app sidebar; install once per daemon. Opening it costs one `agent-manager.snapshot`
-call (sessions, workspaces, projects, terminals, host stats and auto-release settings), that answer is
-kept for 30 seconds, and every action refreshes the same single call — one round trip per read, which
-matters on a phone over a relay.
+`"pluginsEnabled": true` in the daemon `config.json`, then `paseo reload`. Install once per daemon;
+every client connected to that host (including the official iOS app) gets the pill.
 
-Needs Paseo 0.10.0+ and a Linux daemon host (`/proc` feeds the pid and memory numbers; the `paseo` CLI
-serves Delete, the daemon MCP route serves Release). Nothing extra is installed: it uses the daemon's
-own client and the session protocol on `ws://<daemon.listen>/ws`.
-
-## Notes
-
-- Actions are addressed by workspace or session id, never by path, and never touch other workspaces.
-  Archiving the last active workspace at a path asks first while it still has session records, because
-  Paseo resolves directory workspaces by path.
-- CPU percentage comes from the delta between the last two `/proc/stat` reads, so a read never sleeps.
-  The first read after start samples a 200 ms window, and reads closer than 400 ms apart reuse the
-  previous value instead of reporting tick-quantised noise.
-- Terminal activity comes from the daemon and is `null` for a plain shell or a program that does not
-  integrate, so the panel says `not reporting activity` rather than guessing.
-- `Release` and `Restore` use the daemon's own kill and refresh requests, so the record stays valid and
-  the next message resumes it. `Delete` goes through the `paseo` CLI and leaves the provider's own
-  session files on disk, so an imported session can come back.
-- Workspaces whose project was removed are still listed, as `project removed`. `Delete` on a workspace
-  also drops its registry record, remembered in `~/.paseo/agent-manager/deleted-workspaces.json`.
+Needs Paseo 0.10.0+ and a Linux daemon host (`/proc` feeds the host stats). Nothing extra is
+installed: the plugin uses the daemon's own client, the session protocol on `ws://<daemon.listen>/ws`
+and `node:child_process` for git.
 
 ## Checking which build a client runs
 
@@ -175,9 +145,8 @@ A client only picks up plugin code when it fetches the catalog — at connect, o
 announces `plugin_catalog_changed` after an install, a reload or an update. A phone that was asleep or
 offline during the change keeps running the bundle it already has until it reconnects.
 
-The footer of the panel shows a `ui <code>` stamp derived from the client code that is actually
-executing, so a stale client is easy to spot: compare it with the code the current source produces. The
-composer pill and `Open Agent Manager` in ⌘K are part of the same build.
+The bottom of the pill popover shows a `ui <code>` stamp derived from the client code that is actually
+executing, so a stale client is easy to spot: compare it with the code the current source produces.
 
 ## Development
 
@@ -188,6 +157,7 @@ npm run typecheck
 
 The plugin runs from source: point the daemon at this directory and reload it (`paseo plugin install
 <path>`, then `paseo reload`). `index.client.tsx` and `index.server.ts` are the two halves Paseo
-compiles; `shared/contracts.ts` is the RPC surface between them.
+compiles; `shared/contracts.ts` is the RPC surface between them; `server/project-git.ts` holds the git
+bootstrap.
 
 MIT

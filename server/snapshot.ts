@@ -1,60 +1,13 @@
-import type {
-  AutoReleaseSnapshot,
-  OverviewPayload,
-  ProjectRow,
-  SystemStats,
-  WorkspaceRow,
-} from "../shared/contracts";
-import { readAutoReleaseState } from "./auto-release";
-import { buildOverview, type PaseoLike } from "./overview";
+import type { FactsPayload } from "../shared/contracts";
+import type { PaseoLike } from "./agents";
 import { readSystemStats } from "./system";
-import {
-  listAllTerminals,
-  summarizeTerminals,
-  type TerminalEntry,
-  type TerminalLister,
-  type TerminalSummary,
-} from "./terminals";
-import { listProjectRows, listWorkspaceRows } from "./workspaces";
+import { listAllTerminals, summarizeTerminalPresence, type TerminalLister } from "./terminals";
 
-export interface SnapshotPayload {
-  overview: OverviewPayload;
-  workspaces: WorkspaceRow[];
-  projects: ProjectRow[];
-  terminals: TerminalSummary[];
-  terminalList: TerminalEntry[];
-  system: SystemStats;
-  autoRelease: AutoReleaseSnapshot;
-}
-
-export async function buildSnapshot(paseo: PaseoLike): Promise<SnapshotPayload> {
-  const [overview, workspaces, projects, system, autoRelease, terminals] = await Promise.all([
-    buildOverview(paseo),
-    listWorkspaceRows(),
-    listProjectRows(),
+/** The host line and terminal counts the pill popover shows. */
+export async function buildFacts(paseo: PaseoLike): Promise<FactsPayload> {
+  const [system, terminals] = await Promise.all([
     readSystemStats(),
-    readAutoReleaseState(),
-    listAllTerminals(paseo as unknown as TerminalLister).catch(() => [] as TerminalEntry[]),
+    listAllTerminals(paseo as unknown as TerminalLister).catch(() => []),
   ]);
-  const summaries = await summarizeTerminals(
-    async () => terminals,
-    workspaces.map((row) => row.workspaceId),
-  );
-  return {
-    overview,
-    workspaces,
-    projects,
-    terminals: [...summaries.values()],
-    terminalList: terminals.map((terminal) => ({
-      id: terminal.id,
-      name: terminal.name,
-      workspaceId: terminal.workspaceId,
-      cwd: terminal.cwd,
-      state: terminal.state,
-      attention: terminal.attention,
-      changedAt: terminal.changedAt,
-    })),
-    system,
-    autoRelease,
-  };
+  return { system, terminals: summarizeTerminalPresence(terminals) };
 }
