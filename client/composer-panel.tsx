@@ -1,6 +1,6 @@
 import type { PluginButtonContentProps, PluginClientContext } from "@getpaseo/plugin/client";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { ActivityIndicator, Pressable, Text, View } from "react-native";
+import { ActivityIndicator, Platform, Pressable, Text, View } from "react-native";
 
 import { useAgentDirectory, type DirectoryAgent } from "./agent-directory";
 import { formatTime, hostLine, message, sweepLine } from "./format";
@@ -80,6 +80,8 @@ export function WorkspacePillPanel(props: WorkspacePillPanelProps) {
   const agents = useAgentDirectory();
   const notices = useGitNotices();
   const facts = useHostFacts();
+  // Keep this in step with pillTitle(): the body only drops the line when the heading really shows it.
+  const hostLineIsInHeading = layout.compact && Platform.OS !== "web";
   const [note, setNote] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [busyNotice, setBusyNotice] = useState<number | null>(null);
@@ -119,7 +121,7 @@ export function WorkspacePillPanel(props: WorkspacePillPanelProps) {
 
   return (
     <View style={styles.pillPanel}>
-      {layout.compact ? null : (
+      {hostLineIsInHeading ? null : (
         <Text style={styles.pillHost} numberOfLines={2}>
           {facts ? hostLine(facts, terminal) : "reading host…"}
         </Text>
