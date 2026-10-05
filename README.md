@@ -20,7 +20,10 @@ One pill sits above the composer and follows the session it belongs to. Its labe
 count (`3 tabs`), the one number the menu is about, plus `⚠` when Paseo recorded a project notice.
 Opening the pill shows:
 
-- the host line (`load`, `cpu`, `mem`, `swap`) and this workspace's terminal count,
+- the host line (`load`, `cpu`, `mem`, `swap`), this workspace's terminal count, and the
+  auto-release numbers from the same payload: `release 10m idle · last 03:01 · next 03:16`, which
+  becomes `due 03:12` once a release is waiting, `sweeping now` while a sweep runs, and carries
+  `error: …` when one failed — so any device can read the plugin's state without a CLI or a reload,
 - **NOTICES**, when there are any: one short line each (`<name> · what happened`, e.g.
   `hardcore-dingo · worktree ready`, `dirty-monkey · uncommitted changes — remove?`), newest and most
   actionable first, two at most, each with a `×` that dismisses it and buttons when a decision is

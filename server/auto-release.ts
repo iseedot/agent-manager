@@ -10,6 +10,7 @@ import {
   type DaemonSessionClient,
 } from "./daemon-client";
 import { releaseAgents } from "./actions";
+import type { AutoReleaseStatus } from "../shared/contracts";
 import { paseoHome } from "./daemon-mcp";
 import { fireAndForget } from "./guard";
 import { describe, serializeWrite, str, writeJsonAtomic } from "./util";
@@ -40,6 +41,38 @@ const DEFAULT_STATE: AutoReleaseSnapshot = {
 let fallbackTimer: ReturnType<typeof setInterval> | null = null;
 let dueTimer: ReturnType<typeof setTimeout> | null = null;
 let running = false;
+/** Latest sweep result plus the armed due timer — what the pill shows next to the host stats. */
+let status: AutoReleaseStatus | null = null;
+
+function publishStatus(next: AutoReleaseStatus): void {
+  status = next;
+}
+
+function idleMinutes(): number {
+  return IDLE_MINUTES;
+}
+
+/**
+ * The auto-release numbers for the pill: last sweep, next scheduled sweep, and the release a due
+ * timer is waiting for. Read from memory when the plugin has swept, else from the state file.
+ */
+export async function readAutoReleaseStatus(): Promise<AutoReleaseStatus> {
+  if (status) {
+    return { ...status, running };
+  }
+  const stored = { ...DEFAULT_STATE, ...(await readStoredState()) };
+  return {
+    lastRunAt: stored.lastRunAt,
+    released: stored.lastReleased.length,
+    skipped: stored.lastSkipped,
+    removedWorkspaces: stored.lastRemovedWorkspaces.length,
+    error: stored.lastError,
+    nextRunAt: stored.nextRunAt,
+    dueAt: null,
+    running,
+    idleMinutes: idleMinutes(),
+  };
+}
 
 export function startAutoReleaseScheduler(): () => void {
   if (fallbackTimer) {
@@ -48,7 +81,7 @@ export function startAutoReleaseScheduler(): () => void {
   fallbackTimer = setInterval(() => {
     fireAndForget(scheduledSweep(), "scheduled sweep");
   }, SWEEP_INTERVAL_MS);
-  fireAndForget(scheduledSweep(), "initial sweep");
+  fireAndForget(seedStatusThenSweep(), "initial sweep");
   return () => {
     if (fallbackTimer) {
       clearInterval(fallbackTimer);
@@ -56,6 +89,11 @@ export function startAutoReleaseScheduler(): () => void {
     }
     clearDueTimer();
   };
+}
+
+async function seedStatusThenSweep(): Promise<void> {
+  publishStatus(await readAutoReleaseStatus());
+  await scheduledSweep();
 }
 
 function clearDueTimer(): void {
@@ -133,8 +171,22 @@ async function sweep(): Promise<void> {
     error = describe(removalError);
   }
 
-  await recordRun(state, released, removed, skipped, error).catch((recordError) => {
-    console.log(`agent-manager could not record the sweep: ${describe(recordError)}`);
+  const finished = await recordRun(state, released, removed, skipped, error).catch(
+    (recordError) => {
+      console.log(`agent-manager could not record the sweep: ${describe(recordError)}`);
+      return null;
+    },
+  );
+  publishStatus({
+    lastRunAt: finished?.lastRunAt ?? new Date().toISOString(),
+    released: released.length,
+    skipped,
+    removedWorkspaces: removed.length,
+    error,
+    nextRunAt: finished?.nextRunAt ?? null,
+    dueAt: nextDueAt === null ? null : new Date(nextDueAt).toISOString(),
+    running: false,
+    idleMinutes: IDLE_MINUTES,
   });
   armNextDue(nextDueAt);
 }
@@ -209,18 +261,18 @@ async function recordRun(
   removedWorkspaces: Array<{ workspaceId: string; name: string | null }>,
   skipped: number,
   error: string | null,
-): Promise<void> {
+): Promise<AutoReleaseSnapshot> {
   const finishedAt = new Date().toISOString();
-  await writeState(
-    withDerived({
-      ...state,
-      lastRunAt: finishedAt,
-      lastReleased: released,
-      lastRemovedWorkspaces: removedWorkspaces,
-      lastSkipped: skipped,
-      lastError: error,
-    }),
-  );
+  const finished = withDerived({
+    ...state,
+    lastRunAt: finishedAt,
+    lastReleased: released,
+    lastRemovedWorkspaces: removedWorkspaces,
+    lastSkipped: skipped,
+    lastError: error,
+  });
+  await writeState(finished);
+  return finished;
 }
 
 function withDerived(state: AutoReleaseSnapshot): AutoReleaseSnapshot {

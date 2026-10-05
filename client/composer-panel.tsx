@@ -141,6 +141,9 @@ export function WorkspacePillPanel(props: WorkspacePillPanelProps) {
           ? `${terminal.count} terminal${terminal.count === 1 ? "" : "s"}${terminal.working > 0 ? ` · ${terminal.working} working` : ""}${terminal.waiting > 0 ? ` · ${terminal.waiting} waiting` : ""}`
           : "No terminals"}
       </Text>
+      <Text style={styles.hint} numberOfLines={1}>
+        {facts ? autoReleaseLine(facts.autoRelease) : "reading auto-release…"}
+      </Text>
 
       {notices.length > 0 ? (
         <View style={styles.pillNote}>
@@ -314,6 +317,35 @@ function tabMeta(tone: TabStateTone, styles: StyleMap): StyleMap[string] {
   if (tone === "input") return styles.factWarn;
   if (tone === "failed") return styles.factDanger;
   return undefined;
+}
+
+/** Auto-release, on the same line as the host numbers it belongs to. */
+function autoReleaseLine(status: FactsPayload["autoRelease"]): string {
+  const parts: string[] = [`release ${status.idleMinutes}m idle`];
+  if (status.running) {
+    parts.push("sweeping now");
+  } else if (status.lastRunAt) {
+    parts.push(`last ${clock(status.lastRunAt)}${status.released > 0 ? ` (${status.released} released)` : ""}`);
+  } else {
+    parts.push("never ran");
+  }
+  if (status.dueAt) {
+    parts.push(`due ${clock(status.dueAt)}`);
+  } else if (status.nextRunAt) {
+    parts.push(`next ${clock(status.nextRunAt)}`);
+  }
+  if (status.error) {
+    parts.push(`error: ${status.error}`);
+  }
+  return parts.join(" · ");
+}
+
+function clock(iso: string | null): string {
+  const date = new Date(iso ?? "");
+  if (Number.isNaN(date.getTime())) {
+    return "?";
+  }
+  return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
 }
 
 function systemLine(system: SystemStats): string {

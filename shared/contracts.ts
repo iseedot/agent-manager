@@ -24,9 +24,24 @@ export const terminalPresenceSchema = z.object({
 
 export type TerminalPresence = z.infer<typeof terminalPresenceSchema>;
 
+export const autoReleaseStatusSchema = z.object({
+  lastRunAt: z.string().nullable(),
+  released: z.number().int(),
+  skipped: z.number().int(),
+  removedWorkspaces: z.number().int(),
+  error: z.string().nullable(),
+  nextRunAt: z.string().nullable(),
+  dueAt: z.string().nullable(),
+  running: z.boolean(),
+  idleMinutes: z.number(),
+});
+
+export type AutoReleaseStatus = z.infer<typeof autoReleaseStatusSchema>;
+
 export const factsSchema = z.object({
   system: systemStatsSchema,
   terminals: z.array(terminalPresenceSchema),
+  autoRelease: autoReleaseStatusSchema,
 });
 
 export type FactsPayload = z.infer<typeof factsSchema>;
