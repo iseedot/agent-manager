@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { ActivityIndicator, Platform, Pressable, Text, View } from "react-native";
 
 import { useAgentDirectory, type DirectoryAgent } from "./agent-directory";
-import { formatTime, hostLine, message, sweepLine } from "./format";
+import { hostLine, message, sweepLine, tabLine } from "./format";
 import { dismissGitNotice, runGitNoticeAction, sortNotices, useGitNotices } from "./git-notices";
 import { useHostFacts } from "./host-facts";
 import { buildStyles, type StyleMap } from "./styles";
@@ -19,7 +19,7 @@ const MAX_VISIBLE_NOTICES = 2;
  */
 const UI_STAMP: string = (() => {
   let hash = 0;
-  const sources = [WorkspacePillPanel, tabState, tabTitle, buildStyles, formatTime].map((value) => {
+  const sources = [WorkspacePillPanel, tabState, tabTitle, buildStyles, tabLine].map((value) => {
     try {
       return String(value);
     } catch {
@@ -80,8 +80,8 @@ export function WorkspacePillPanel(props: WorkspacePillPanelProps) {
   const agents = useAgentDirectory();
   const notices = useGitNotices();
   const facts = useHostFacts();
-  // Keep this in step with pillTitle(): the body only drops the line when the heading really shows it.
-  const hostLineIsInHeading = layout.compact && Platform.OS !== "web";
+  // Keep this in step with pillTitle(): the body only drops the line the heading really shows.
+  const tabLineIsInHeading = layout.compact && Platform.OS !== "web";
   const [note, setNote] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [busyNotice, setBusyNotice] = useState<number | null>(null);
@@ -121,15 +121,13 @@ export function WorkspacePillPanel(props: WorkspacePillPanelProps) {
 
   return (
     <View style={styles.pillPanel}>
-      {hostLineIsInHeading ? null : (
-        <Text style={styles.pillHost} numberOfLines={2}>
-          {facts ? hostLine(facts, terminal) : "reading host…"}
-        </Text>
-      )}
+      <Text style={styles.pillHost} numberOfLines={2}>
+        {facts ? hostLine(facts, terminal) : "reading host…"}
+      </Text>
       <Text style={styles.hint} numberOfLines={1}>
         {facts ? sweepLine(facts.autoRelease) : "reading auto-release…"}
       </Text>
-      {current ? (
+      {current && !tabLineIsInHeading ? (
         <Text style={styles.hint} numberOfLines={1}>
           <Text style={styles.pillLabel}>Tab </Text>
           {tabLine(current)}
@@ -301,12 +299,3 @@ function tabMeta(tone: TabStateTone, styles: StyleMap): StyleMap[string] {
   return undefined;
 }
 
-function tabLine(row: DirectoryAgent): string {
-  return [
-    `Created ${formatTime(row.createdAt)}`,
-    row.lastUserMessageAt ? `Last ${formatTime(row.lastUserMessageAt)}` : null,
-    `Updated ${formatTime(row.updatedAt)}`,
-  ]
-    .filter((part): part is string => Boolean(part))
-    .join(" · ");
-}

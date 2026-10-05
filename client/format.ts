@@ -56,6 +56,21 @@ export function hostLine(facts: FactsPayload, terminal: TerminalPresence | null)
   return parts.join(" · ");
 }
 
+/** This tab's life in three stamps — the sheet heading on a phone, a body line elsewhere. */
+export function tabLine(row: {
+  createdAt: string | null;
+  updatedAt: string | null;
+  lastUserMessageAt: string | null;
+}): string {
+  return [
+    `Created ${formatTime(row.createdAt)}`,
+    row.lastUserMessageAt ? `Last ${formatTime(row.lastUserMessageAt)}` : null,
+    `Updated ${formatTime(row.updatedAt)}`,
+  ]
+    .filter((part): part is string => Boolean(part))
+    .join(" · ");
+}
+
 /** Auto-release state, one short line under the host numbers. */
 export function sweepLine(status: FactsPayload["autoRelease"]): string {
   const parts: string[] =
