@@ -13,8 +13,12 @@ import {
 
 const PILL_ID = "agent-workspace-pill";
 const FOCUS_SURFACE_ID = "open-agent";
-/** Host-supplied heading (a tooltip on desktop, the sheet title on a phone) until the name is known. */
-const PILL_TITLE = "Tabs";
+/**
+ * The host requires a non-empty button title and shows it as the sheet heading on a phone, so this is
+ * a zero-width space: the heading renders with nothing visible in it. A real string here would put a
+ * label above the popover that the popover itself already says better.
+ */
+const PILL_TITLE = "\u200B";
 const LABEL_FALLBACK = "Tabs";
 const PILL_ICON = "Layers";
 const ERROR_TITLE_MS = 8000;
@@ -117,30 +121,6 @@ export function contributeComposerPills(client: PluginClientContext): () => void
   const busy = new Set<string>();
   let released = false;
   const signatures = new Map<string, string>();
-  const workspaceNames = new Map<string, string>();
-  const lookingUpNames = new Set<string>();
-
-  // The host shows the button title as the sheet heading, so make it the workspace's own name
-  // instead of a generic word. One lookup per workspace, then cached.
-  const ensureWorkspaceName = (workspaceId: string): void => {
-    if (workspaceNames.has(workspaceId) || lookingUpNames.has(workspaceId)) {
-      return;
-    }
-    lookingUpNames.add(workspaceId);
-    void Promise.resolve()
-      .then(() => client.paseo.workspaces.ref(workspaceId).current())
-      .then((workspace) => {
-        const name = text(workspace?.title) ?? text(workspace?.name);
-        if (name) {
-          workspaceNames.set(workspaceId, name);
-        }
-      })
-      .catch(() => undefined)
-      .finally(() => {
-        lookingUpNames.delete(workspaceId);
-        sync();
-      });
-  };
 
   const flash = (title: string): void => {
     for (const registration of pills.values()) {
@@ -170,7 +150,6 @@ export function contributeComposerPills(client: PluginClientContext): () => void
     if (released || pills.has(agentId)) {
       return;
     }
-    ensureWorkspaceName(workspaceId);
     const Content = (props: PluginButtonContentProps) => (
       <WorkspacePillPanel
         {...props}
@@ -206,8 +185,7 @@ export function contributeComposerPills(client: PluginClientContext): () => void
     const tabs = resolved.tabsByWorkspace.get(agent.workspaceId) ?? [];
     const running = tabs.filter((row) => row.status === "running").length;
     const gitWarning = gitNoticeWarning(gitNoticesSnapshot());
-    const title = workspaceNames.get(agent.workspaceId) ?? PILL_TITLE;
-    const signature = `${tabs.length}|${running}|${gitWarning ?? ""}|${title}`;
+    const signature = `${tabs.length}|${running}|${gitWarning ?? ""}`;
     if (signatures.get(agentId) === signature) {
       return;
     }
@@ -217,7 +195,7 @@ export function contributeComposerPills(client: PluginClientContext): () => void
     const label = `${count === 0 ? LABEL_FALLBACK : tabsWord}${gitWarning ? " ⚠" : ""}`;
     void running;
     try {
-      registration.update({ label, title });
+      registration.update({ label, title: PILL_TITLE });
     } catch (error) {
       fail("update the composer pill", error);
     }
