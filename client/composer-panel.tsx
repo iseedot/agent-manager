@@ -2,14 +2,10 @@ import type { PluginButtonContentProps, PluginClientContext } from "@getpaseo/pl
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { ActivityIndicator, Pressable, Text, View } from "react-native";
 
-import {
-  factsRpc,
-  type FactsPayload,
-  type TerminalPresence,
-} from "../shared/contracts";
 import { useAgentDirectory, type DirectoryAgent } from "./agent-directory";
-import { formatTime, message } from "./format";
+import { formatTime, hostLine, message, sweepLine } from "./format";
 import { dismissGitNotice, runGitNoticeAction, sortNotices, useGitNotices } from "./git-notices";
+import { useHostFacts } from "./host-facts";
 import { buildStyles, type StyleMap } from "./styles";
 
 type Client = PluginClientContext;
@@ -83,24 +79,10 @@ export function WorkspacePillPanel(props: WorkspacePillPanelProps) {
   const { styles, tones } = useMemo(() => buildStyles(theme, layout.compact), [theme, layout.compact]);
   const agents = useAgentDirectory();
   const notices = useGitNotices();
-  const [facts, setFacts] = useState<FactsPayload | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const facts = useHostFacts();
   const [note, setNote] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [busyNotice, setBusyNotice] = useState<number | null>(null);
-
-  const loadFacts = useCallback(async () => {
-    try {
-      setFacts(await client.rpc(factsRpc, {}));
-      setError(null);
-    } catch (loadError) {
-      setError(message(loadError));
-    }
-  }, [client]);
-
-  useEffect(() => {
-    void loadFacts();
-  }, [loadFacts]);
 
   const workspaceAgents = useMemo(
     () => agents.filter((row) => row.workspaceId === workspaceId && row.archivedAt === null),
@@ -137,9 +119,11 @@ export function WorkspacePillPanel(props: WorkspacePillPanelProps) {
 
   return (
     <View style={styles.pillPanel}>
-      <Text style={styles.pillHost} numberOfLines={2}>
-        {facts ? hostLine(facts, terminal) : "reading host…"}
-      </Text>
+      {layout.compact ? null : (
+        <Text style={styles.pillHost} numberOfLines={2}>
+          {facts ? hostLine(facts, terminal) : "reading host…"}
+        </Text>
+      )}
       <Text style={styles.hint} numberOfLines={1}>
         {facts ? sweepLine(facts.autoRelease) : "reading auto-release…"}
       </Text>
@@ -293,7 +277,7 @@ export function WorkspacePillPanel(props: WorkspacePillPanelProps) {
       </View>
 
       {busy ? <ActivityIndicator color={tones.accent} size="small" /> : null}
-      {note || error ? <Text style={styles.hint}>{note ?? error}</Text> : null}
+      {note ? <Text style={styles.hint}>{note}</Text> : null}
       <Text style={styles.buildStamp}>ui {UI_STAMP}</Text>
     </View>
   );
@@ -313,56 +297,6 @@ function tabMeta(tone: TabStateTone, styles: StyleMap): StyleMap[string] {
   if (tone === "input") return styles.factWarn;
   if (tone === "failed") return styles.factDanger;
   return undefined;
-}
-
-/** Auto-release state, one short line under the host numbers. */
-function sweepLine(status: FactsPayload["autoRelease"]): string {
-  const parts: string[] =
-    status.running === true
-      ? ["Sweep sweeping now"]
-      : [status.lastRunAt ? `Sweep ${clock(status.lastRunAt)}` : "Sweep never ran"];
-  if (status.dueAt) {
-    parts.push(`due ${clock(status.dueAt)}`);
-  } else if (status.nextRunAt) {
-    parts.push(clock(status.nextRunAt));
-  }
-  if (status.error) {
-    parts.push(`error: ${status.error}`);
-  }
-  return parts.join(" · ");
-}
-
-function clock(iso: string | null): string {
-  const date = new Date(iso ?? "");
-  if (Number.isNaN(date.getTime())) {
-    return "?";
-  }
-  return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
-}
-
-/** Host numbers and this workspace's terminals, on one line. */
-function hostLine(facts: FactsPayload, terminal: TerminalPresence | null): string {
-  const parts: string[] = [];
-  const system = facts.system;
-  const percent = (value: number | null | undefined): string =>
-    value === null || value === undefined ? "?" : `${Math.round(value)}%`;
-  if (system.load1 !== null) parts.push(`load ${system.load1.toFixed(2)}`);
-  if (system.cpuPercent !== null) parts.push(`cpu ${system.cpuPercent.toFixed(0)}%`);
-  parts.push(`mem ${percent(system.memUsedPercent)}/${percent(system.swapUsedPercent)}`);
-  if (system.diskFreePercent !== null) {
-    parts.push(`disk ${percent(system.diskFreePercent)} free`);
-  }
-  if (terminal) {
-    parts.push(`${terminal.count} terminal${terminal.count === 1 ? "" : "s"}`);
-    if (terminal.working > 0) parts.push(`${terminal.working} working`);
-    if (terminal.waiting > 0) parts.push(`${terminal.waiting} waiting`);
-  }
-  return parts.join(" · ") || "host metrics unavailable";
-}
-
-function megabytes(bytes: number): string {
-  const mb = bytes / (1024 * 1024);
-  return mb >= 1024 ? `${(mb / 1024).toFixed(1)}G` : `${Math.round(mb)}M`;
 }
 
 function tabLine(row: DirectoryAgent): string {
