@@ -2,7 +2,11 @@ import type { PluginButtonContentProps, PluginClientContext } from "@getpaseo/pl
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { ActivityIndicator, Pressable, Text, View } from "react-native";
 
-import { factsRpc, type FactsPayload, type SystemStats } from "../shared/contracts";
+import {
+  factsRpc,
+  type FactsPayload,
+  type TerminalPresence,
+} from "../shared/contracts";
 import { useAgentDirectory, type DirectoryAgent } from "./agent-directory";
 import { formatTime, message } from "./format";
 import { dismissGitNotice, runGitNoticeAction, sortNotices, useGitNotices } from "./git-notices";
@@ -134,16 +138,17 @@ export function WorkspacePillPanel(props: WorkspacePillPanelProps) {
   return (
     <View style={styles.pillPanel}>
       <Text style={styles.pillHost} numberOfLines={2}>
-        {facts ? systemLine(facts.system) : "reading host…"}
+        {facts ? hostLine(facts, terminal) : "reading host…"}
       </Text>
       <Text style={styles.hint} numberOfLines={1}>
-        {terminal
-          ? `${terminal.count} terminal${terminal.count === 1 ? "" : "s"}${terminal.working > 0 ? ` · ${terminal.working} working` : ""}${terminal.waiting > 0 ? ` · ${terminal.waiting} waiting` : ""}`
-          : "No terminals"}
+        {facts ? sweepLine(facts.autoRelease) : "reading auto-release…"}
       </Text>
-      <Text style={styles.hint} numberOfLines={1}>
-        {facts ? autoReleaseLine(facts.autoRelease) : "reading auto-release…"}
-      </Text>
+      {current ? (
+        <Text style={styles.hint} numberOfLines={1}>
+          <Text style={styles.pillLabel}>Tab </Text>
+          {tabLine(current)}
+        </Text>
+      ) : null}
 
       {notices.length > 0 ? (
         <View style={styles.pillNote}>
@@ -287,15 +292,6 @@ export function WorkspacePillPanel(props: WorkspacePillPanelProps) {
         </Pressable>
       </View>
 
-      {current ? (
-        <View style={styles.pillNote}>
-          <Text style={styles.pillLabel}>THIS TAB</Text>
-          <Text style={styles.hint} numberOfLines={3}>
-            {tabLine(current)}
-          </Text>
-        </View>
-      ) : null}
-
       {busy ? <ActivityIndicator color={tones.accent} size="small" /> : null}
       {note || error ? <Text style={styles.hint}>{note ?? error}</Text> : null}
       <Text style={styles.buildStamp}>ui {UI_STAMP}</Text>
@@ -319,20 +315,16 @@ function tabMeta(tone: TabStateTone, styles: StyleMap): StyleMap[string] {
   return undefined;
 }
 
-/** Auto-release, on the same line as the host numbers it belongs to. */
-function autoReleaseLine(status: FactsPayload["autoRelease"]): string {
-  const parts: string[] = [`release ${status.idleMinutes}m idle`];
-  if (status.running) {
-    parts.push("sweeping now");
-  } else if (status.lastRunAt) {
-    parts.push(`last ${clock(status.lastRunAt)}${status.released > 0 ? ` (${status.released} released)` : ""}`);
-  } else {
-    parts.push("never ran");
-  }
+/** Auto-release state, one short line under the host numbers. */
+function sweepLine(status: FactsPayload["autoRelease"]): string {
+  const parts: string[] =
+    status.running === true
+      ? ["Sweep sweeping now"]
+      : [status.lastRunAt ? `Sweep ${clock(status.lastRunAt)}` : "Sweep never ran"];
   if (status.dueAt) {
     parts.push(`due ${clock(status.dueAt)}`);
   } else if (status.nextRunAt) {
-    parts.push(`next ${clock(status.nextRunAt)}`);
+    parts.push(clock(status.nextRunAt));
   }
   if (status.error) {
     parts.push(`error: ${status.error}`);
@@ -348,15 +340,22 @@ function clock(iso: string | null): string {
   return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
 }
 
-function systemLine(system: SystemStats): string {
+/** Host numbers and this workspace's terminals, on one line. */
+function hostLine(facts: FactsPayload, terminal: TerminalPresence | null): string {
   const parts: string[] = [];
+  const system = facts.system;
+  const percent = (value: number | null | undefined): string =>
+    value === null || value === undefined ? "?" : `${Math.round(value)}%`;
   if (system.load1 !== null) parts.push(`load ${system.load1.toFixed(2)}`);
   if (system.cpuPercent !== null) parts.push(`cpu ${system.cpuPercent.toFixed(0)}%`);
-  if (system.memTotalBytes !== null && system.memUsedBytes !== null) {
-    parts.push(`mem ${megabytes(system.memUsedBytes)}/${megabytes(system.memTotalBytes)}`);
+  parts.push(`mem ${percent(system.memUsedPercent)}/${percent(system.swapUsedPercent)}`);
+  if (system.diskFreePercent !== null) {
+    parts.push(`disk ${percent(system.diskFreePercent)} free`);
   }
-  if (system.swapTotalBytes !== null && system.swapUsedBytes !== null && system.swapTotalBytes > 0) {
-    parts.push(`swap ${megabytes(system.swapUsedBytes)}/${megabytes(system.swapTotalBytes)}`);
+  if (terminal) {
+    parts.push(`${terminal.count} terminal${terminal.count === 1 ? "" : "s"}`);
+    if (terminal.working > 0) parts.push(`${terminal.working} working`);
+    if (terminal.waiting > 0) parts.push(`${terminal.waiting} waiting`);
   }
   return parts.join(" · ") || "host metrics unavailable";
 }
@@ -367,12 +366,10 @@ function megabytes(bytes: number): string {
 }
 
 function tabLine(row: DirectoryAgent): string {
-  const state = tabState(row);
   return [
-    state.label,
     `Created ${formatTime(row.createdAt)}`,
+    row.lastUserMessageAt ? `Last ${formatTime(row.lastUserMessageAt)}` : null,
     `Updated ${formatTime(row.updatedAt)}`,
-    row.lastUserMessageAt ? `Last message ${formatTime(row.lastUserMessageAt)}` : null,
   ]
     .filter((part): part is string => Boolean(part))
     .join(" · ");

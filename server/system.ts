@@ -1,3 +1,4 @@
+import { statfs } from "node:fs/promises";
 import { readFile } from "node:fs/promises";
 
 export interface SystemStats {
@@ -7,8 +8,12 @@ export interface SystemStats {
   cpuPercent: number | null;
   memTotalBytes: number | null;
   memUsedBytes: number | null;
+  memUsedPercent: number | null;
   swapTotalBytes: number | null;
   swapUsedBytes: number | null;
+  swapUsedPercent: number | null;
+  /** Free space of the root filesystem, as a percentage. */
+  diskFreePercent: number | null;
   uptimeSeconds: number | null;
 }
 
@@ -24,11 +29,12 @@ let lastTicks: CpuTicks | null = null;
 let lastPercent: { value: number | null; at: number } | null = null;
 
 export async function readSystemStats(): Promise<SystemStats> {
-  const [meminfo, loadavg, uptime, ticks] = await Promise.all([
+  const [meminfo, loadavg, uptime, ticks, diskFreePercent] = await Promise.all([
     readText("/proc/meminfo"),
     readText("/proc/loadavg"),
     readText("/proc/uptime"),
     readCpuTicks(),
+    readDiskFreePercent(),
   ]);
 
   const cpuPercent = await cpuPercentSinceLastSample(ticks);
@@ -42,10 +48,31 @@ export async function readSystemStats(): Promise<SystemStats> {
     cpuPercent,
     memTotalBytes: memory.total,
     memUsedBytes: memory.used,
+    memUsedPercent: percentage(memory.used, memory.total),
     swapTotalBytes: memory.swapTotal,
     swapUsedBytes: memory.swapUsed,
+    swapUsedPercent: percentage(memory.swapUsed, memory.swapTotal),
+    diskFreePercent,
     uptimeSeconds: uptime === null ? null : Number(uptime.trim().split(/\s+/)[0]) || null,
   };
+}
+
+function percentage(part: number | null, whole: number | null): number | null {
+  if (part === null || whole === null || whole <= 0) {
+    return null;
+  }
+  return Math.min(100, Math.max(0, (part / whole) * 100));
+}
+
+async function readDiskFreePercent(): Promise<number | null> {
+  try {
+    const stats = await statfs("/");
+    const total = stats.blocks * stats.bsize;
+    const free = stats.bavail * stats.bsize;
+    return percentage(free, total);
+  } catch {
+    return null;
+  }
 }
 
 async function cpuPercentSinceLastSample(ticks: CpuTicks | null): Promise<number | null> {

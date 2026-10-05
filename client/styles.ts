@@ -166,6 +166,7 @@ export function buildStyles(
     buttonTextOn: { color: tones.onAccent, fontSize: 12 },
     disabled: { opacity: 0.45 },
     pillPanel: { gap: 8 },
+
     pillHost: { color: palette.foregroundMuted, fontSize: 11, lineHeight: 16 },
     pillHead: {
       flexDirection: "row" as const,

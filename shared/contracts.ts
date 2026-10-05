@@ -8,8 +8,11 @@ export const systemStatsSchema = z.object({
   cpuPercent: z.number().nullable(),
   memTotalBytes: z.number().nullable(),
   memUsedBytes: z.number().nullable(),
+  memUsedPercent: z.number().nullable(),
   swapTotalBytes: z.number().nullable(),
   swapUsedBytes: z.number().nullable(),
+  swapUsedPercent: z.number().nullable(),
+  diskFreePercent: z.number().nullable(),
   uptimeSeconds: z.number().nullable(),
 });
 
