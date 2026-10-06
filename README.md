@@ -132,12 +132,13 @@ closed:
    released, and a runtime the daemon touched inside the **grace window** (five minutes) is left for the
    next tick, so a turn that ends just before a tick is not released while its answer is still being
    read.
-2. **Cleanup, once a day.** Archived workspaces with no session records left are deleted. It is the only
-   destructive step and nothing depends on it being prompt, so it rides on the tick but at most every
-   twenty-four hours. The timestamp lives in the state file, so a reload cannot postpone it forever, and
-   the session list the release pass already read is reused instead of listing twice. When that listing
-   failed the phase is skipped entirely — "no session records" would otherwise be true for every
-   workspace.
+2. **Cleanup, once a day.** Archived workspaces with no session records left are deleted. There is a
+   second, switchable mode around it — see [Purging archived workspaces](#purging-archived-workspaces).
+   It is the only destructive step and nothing depends on it being prompt, so it rides on the tick but
+   at most every twenty-four hours. The timestamp lives in the state file, so a reload cannot postpone
+   it forever, and the session list the release pass already read is reused instead of listing twice.
+   When that listing failed the phase is skipped entirely — "no session records" would otherwise be
+   true for every workspace.
 3. **Merged worktrees.** Paseo archives a worktree when its change request merges, but only for the
    worktrees it created itself. Project-local ones (`<project>/.worktrees/<slug>`) are the plugin's, so
    the same rule runs here: merged pull request, nothing uncommitted, nothing unpushed → the workspace
@@ -145,20 +146,61 @@ closed:
 
 Nothing else wakes up: no per-session timer, no due timer, and no second timer for the phases a tick
 triggers. A phase that is still running when the next tick arrives is skipped by its own flag, so slow
-work can never run twice and can never hold the release pass back.
+work can never run twice and can never hold the release pass back. The plugin's own daemon connection is
+opened lazily and kept for the lifetime of the plugin (closed on unload), and only the last tick is
+remembered in `~/.paseo/agent-manager/auto-release.json`.
 
 Releasing goes through the daemon's own close action (MCP `kill_agent`), so the record stays valid and
-the next message resumes the session. The numbers stay fixed at runtime — no UI switch — but they are
-not compiled in (a value that is not a positive number is ignored):
+the next message resumes the session.
 
-| Environment variable | Default | Meaning |
+## Purging archived workspaces
+
+By default "archived" is reversible: the records stay and the daily cleanup only removes workspaces
+that have no sessions left. **Purge archived workspaces** (off by default) makes archiving final — every
+archived workspace is deleted at the next cleanup, sessions included, whether or not agents remain.
+
+```
+every archived workspace
+  └─ pi agent?  → delete its transcript (persistence.nativeHandle)
+  └─ `paseo agent delete` for each session record
+  └─ drop the workspace record
+```
+
+**Delete pi session files** (off by default, only read while purging) removes the provider's own
+transcript as well. Only **pi** is supported: it is the one provider that writes the absolute path of
+its transcript into the agent record (`persistence.nativeHandle`), so the file can be deleted exactly.
+Every other provider either keeps its transcript where this plugin cannot know (opencode, the ACP
+agents: copilot, cursor, kimi, kiro, trae, hermes) or names it with an id instead of a path (claude,
+codex) — guessed paths would risk deleting a file that was never ours, so those are left alone.
+
+This is irreversible: after the purge the workspace and its sessions cannot be restored. Nothing in the
+plugin ever deletes project content or a worktree checkout, only records and the pi transcript.
+
+## Settings
+
+The plugin registers one host-scoped settings document (`auto-release`), so the app's plugin settings
+screen can change all of it; every value has a default and nothing has to be configured to work.
+
+| Setting | Default | Meaning |
 | --- | --- | --- |
-| `PASEO_AGENT_MANAGER_SWEEP_INTERVAL_MS` | `900000` | tick cadence, minimum `5000` |
-| `PASEO_AGENT_MANAGER_GRACE_MINUTES` | `5` | a runtime touched this recently is left for the next tick (`0` releases on the tick) |
-| `PASEO_AGENT_MANAGER_CLEANUP_INTERVAL_MS` | `86400000` | how often the workspace cleanup runs, minimum `60000` |
+| Tick every (minutes) | `15` | the single timer's cadence |
+| Grace (minutes) | `5` | a runtime touched this recently waits for the next tick (`0` releases on the tick) |
+| Cleanup every (hours) | `24` | how often the destructive phase may run |
+| Purge archived workspaces | off | delete every archived workspace, sessions included |
+| Delete pi session files | off | also delete the pi transcript while purging |
 
-The plugin's own daemon connection is opened lazily and kept for the lifetime of the plugin (closed on
-unload), and the plugin keeps only the last tick in `~/.paseo/agent-manager/auto-release.json`.
+Values live in `~/.paseo/plugin-settings/agent-manager/auto-release.json` (`{ version, values }`, with the
+zod schema as the contract). An operator can override any of them from the daemon environment, and the
+environment wins — handy for a one-off purge or a quick timing experiment without touching the app. A
+value that is not a positive number is ignored:
+
+| Environment variable | Overrides |
+| --- | --- |
+| `PASEO_AGENT_MANAGER_SWEEP_INTERVAL_MS` | tick cadence in ms, minimum `5000` |
+| `PASEO_AGENT_MANAGER_GRACE_MINUTES` | grace in minutes |
+| `PASEO_AGENT_MANAGER_CLEANUP_INTERVAL_MS` | cleanup interval in ms, minimum `60000` |
+| `PASEO_AGENT_MANAGER_PURGE_ARCHIVED` | `1`/`0` — purge mode |
+| `PASEO_AGENT_MANAGER_DELETE_PROVIDER_SESSIONS` | `1`/`0` — delete the pi transcript too |
 
 ### Other profiles
 

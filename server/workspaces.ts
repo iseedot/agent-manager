@@ -1,9 +1,10 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 
-import { listAllAgents, type AgentLister, type PaseoLike } from "./agents";
+import { listAllAgents, type AgentLister, type AgentRecord, type PaseoLike } from "./agents";
 import { deleteAgents } from "./actions";
 import { paseoHome } from "./daemon-mcp";
+import { deleteAgentSessionFiles } from "./provider-sessions";
 import { serializeWrite, str, writeJsonAtomic } from "./util";
 
 /**
@@ -132,6 +133,57 @@ export async function deleteWorkspace(
     deletedAgents: removed.deleted,
     failed: removed.failed,
   };
+}
+
+export interface PurgeOutcome {
+  removed: Array<{ workspaceId: string; name: string | null }>;
+  deletedSessions: number;
+  sessionFailures: number;
+}
+
+/**
+ * Deletes every archived workspace, session records included, even when agents remain — what the
+ * pill's archiving means when the host is set up that way: nothing archived is kept.
+ *
+ * Destructive and irreversible: once the records are gone the workspace cannot be restored. It is
+ * off by default and only the settings (or an operator's environment) switch it on. Provider session
+ * files go first, because the record naming them is removed immediately after.
+ */
+export async function purgeArchivedWorkspaces(
+  paseo: PaseoLike,
+  options: { deleteProviderSessions: boolean },
+): Promise<PurgeOutcome> {
+  const rows = await listWorkspaceRows();
+  const records = await listAllAgents(paseo.agents.list as unknown as AgentLister);
+  const byWorkspace = new Map<string, AgentRecord[]>();
+  for (const record of records) {
+    if (record.workspaceId === null) {
+      continue;
+    }
+    const list = byWorkspace.get(record.workspaceId) ?? [];
+    list.push(record);
+    byWorkspace.set(record.workspaceId, list);
+  }
+
+  const removed: PurgeOutcome["removed"] = [];
+  let deletedSessions = 0;
+  let sessionFailures = 0;
+  for (const row of rows) {
+    if (row.archivedAt === null) {
+      continue;
+    }
+    const agents = byWorkspace.get(row.workspaceId) ?? [];
+    if (options.deleteProviderSessions && agents.length > 0) {
+      const sessions = await deleteAgentSessionFiles(agents).catch(() => null);
+      deletedSessions += sessions?.deleted.length ?? 0;
+      sessionFailures += sessions?.failed.length ?? 0;
+    }
+    const result = await deleteWorkspace(paseo, row.workspaceId).catch(() => null);
+    if (result?.ok) {
+      removed.push({ workspaceId: row.workspaceId, name: row.name });
+    }
+  }
+  return { removed, deletedSessions, sessionFailures };
 }
 
 async function listWorkspaceAgents(

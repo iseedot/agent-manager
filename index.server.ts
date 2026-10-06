@@ -12,11 +12,13 @@ import {
   registerArchivedProjectWorktree,
   registerWorktreeCleanupAction,
 } from "./server/project-worktrees";
+import { registerAutoReleaseSettings } from "./server/settings";
 import { buildFacts } from "./server/snapshot";
 import { describe } from "./server/util";
 
 export default function contribute(server: PluginServerContext) {
   const removeCrashGuards = installCrashGuards();
+  const removeAutoReleaseSettings = registerAutoReleaseSettings(server);
   registerWorktreeCleanupAction();
 
   server.handle(factsRpc, async (_input, { paseo }) => buildFacts(paseo as unknown as PaseoLike));
@@ -63,6 +65,7 @@ export default function contribute(server: PluginServerContext) {
 
   return () => {
     stopAutoRelease();
+    removeAutoReleaseSettings();
     removeCrashGuards();
     void disposeDaemonClient();
   };

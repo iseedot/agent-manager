@@ -9,9 +9,12 @@ import { releaseAgents } from "./actions";
 import type { AutoReleaseStatus } from "../shared/contracts";
 import { paseoHome } from "./daemon-mcp";
 import { fireAndForget } from "./guard";
+import { autoReleaseConfig, awaitAutoReleaseSettings, type AutoReleaseConfig } from "./settings";
 import { describe, serializeWrite, str, writeJsonAtomic } from "./util";
-import { deleteWorkspace, listWorkspaceRows } from "./workspaces";
+import { deleteWorkspace, listWorkspaceRows, purgeArchivedWorkspaces } from "./workspaces";
 import type { PaseoLike } from "./agents";
+
+type CleanupMode = "empty" | "purge";
 
 interface AutoReleaseSnapshot {
   lastRunAt: string | null;
@@ -21,26 +24,22 @@ interface AutoReleaseSnapshot {
   lastError: string | null;
   nextRunAt: string | null;
   lastCleanupAt: string | null;
+  lastCleanupMode: CleanupMode | null;
+  lastDeletedSessions: number;
 }
 
-// One timer runs the whole plugin, every fifteen minutes by default, and one tick does three
-// things:
+// One timer runs the whole plugin, and one tick does three things:
 //   1. release every runtime that is neither working nor waiting on the user — there is no idle
-//      window any more, so the tick is the resolution, and a grace window keeps a turn that ended
-//      seconds ago from being released on the tick it lands on;
-//   2. every twenty-four hours, drop archived workspaces that have no session records left. This is
-//      the only destructive step and nothing depends on it being prompt, so it does not ride along
-//      on every tick;
+//      window, so the tick is the resolution, and the grace setting keeps a turn that ended seconds
+//      ago from being released on the tick it lands on;
+//   2. every so often (a day by default), drop archived workspaces. Either only the ones with no
+//      session records left, or — when the host turns the purge on — every archived workspace, its
+//      sessions and, for pi, the provider's own transcript with them;
 //   3. apply Paseo's "a merged change request archives the worktree" rule to the project-local
 //      worktrees, which are the plugin's own and therefore invisible to Paseo.
-// There is no per-session timer and no second timer for the work the tick triggers. Knobs, fixed at
-// runtime (no UI switch): PASEO_AGENT_MANAGER_SWEEP_INTERVAL_MS, PASEO_AGENT_MANAGER_GRACE_MINUTES,
-// PASEO_AGENT_MANAGER_CLEANUP_INTERVAL_MS.
+// The numbers and switches come from the plugin settings (host scope) with the environment as an
+// operator override; see shared/settings.ts and server/settings.ts.
 const STATE_PATH = "agent-manager/auto-release.json";
-const DEFAULT_SWEEP_INTERVAL_MS = 15 * 60 * 1000;
-const DEFAULT_GRACE_MINUTES = 5;
-const DEFAULT_CLEANUP_INTERVAL_MS = 24 * 60 * 60 * 1000;
-const MIN_SWEEP_INTERVAL_MS = 5000;
 const DEFAULT_STATE: AutoReleaseSnapshot = {
   lastRunAt: null,
   lastReleased: [],
@@ -49,6 +48,8 @@ const DEFAULT_STATE: AutoReleaseSnapshot = {
   lastError: null,
   nextRunAt: null,
   lastCleanupAt: null,
+  lastCleanupMode: null,
+  lastDeletedSessions: 0,
 };
 
 let sweepTimer: ReturnType<typeof setInterval> | null = null;
@@ -58,27 +59,6 @@ let cleaning = false;
 let archiving = false;
 /** The last sweep as the pill reads it. */
 let status: AutoReleaseStatus | null = null;
-
-function envNumber(name: string, fallback: number, minimum: number): number {
-  const raw = process.env[name];
-  if (raw === undefined || raw.trim().length === 0) {
-    return fallback;
-  }
-  const parsed = Number(raw);
-  return Number.isFinite(parsed) && parsed >= minimum ? parsed : fallback;
-}
-
-function sweepIntervalMs(): number {
-  return envNumber("PASEO_AGENT_MANAGER_SWEEP_INTERVAL_MS", DEFAULT_SWEEP_INTERVAL_MS, MIN_SWEEP_INTERVAL_MS);
-}
-
-function graceMinutes(): number {
-  return envNumber("PASEO_AGENT_MANAGER_GRACE_MINUTES", DEFAULT_GRACE_MINUTES, 0);
-}
-
-function cleanupIntervalMs(): number {
-  return envNumber("PASEO_AGENT_MANAGER_CLEANUP_INTERVAL_MS", DEFAULT_CLEANUP_INTERVAL_MS, 60 * 1000);
-}
 
 function statusFrom(state: AutoReleaseSnapshot, isRunning: boolean): AutoReleaseStatus {
   return {
@@ -109,7 +89,7 @@ export function startAutoReleaseScheduler(): () => void {
   }
   sweepTimer = setInterval(() => {
     fireAndForget(tick(), "scheduled sweep");
-  }, sweepIntervalMs());
+  }, autoReleaseConfig().sweepIntervalMs);
   fireAndForget(seedStatusThenTick(), "initial sweep");
   return () => {
     if (sweepTimer) {
@@ -121,6 +101,7 @@ export function startAutoReleaseScheduler(): () => void {
 
 async function seedStatusThenTick(): Promise<void> {
   status = await readAutoReleaseStatus();
+  await awaitAutoReleaseSettings();
   await tick();
 }
 
@@ -129,13 +110,14 @@ async function tick(): Promise<void> {
   if (running) {
     return;
   }
+  const config = autoReleaseConfig();
   // The flag goes up before the first await so two ticks can never release in parallel.
   running = true;
   let state: AutoReleaseSnapshot | null = null;
   let outcome: ReleaseOutcome | null = null;
   try {
     state = { ...DEFAULT_STATE, ...(await readStoredState()) };
-    outcome = await releaseRuntimes();
+    outcome = await releaseRuntimes(config);
   } catch (tickError) {
     console.log(`agent-manager sweep failed: ${describe(tickError)}`);
   } finally {
@@ -145,7 +127,7 @@ async function tick(): Promise<void> {
     return;
   }
 
-  const finished = await recordRun(state, outcome).catch((recordError) => {
+  const finished = await recordRun(state, outcome, config).catch((recordError) => {
     console.log(`agent-manager could not record the sweep: ${describe(recordError)}`);
     return null;
   });
@@ -154,7 +136,7 @@ async function tick(): Promise<void> {
   }
   status = statusFrom(finished, running);
 
-  await cleanupWorkspaces(finished, outcome);
+  await cleanupWorkspaces(finished, outcome, config);
   await archiveMergedWorktreesOnce();
 }
 
@@ -189,7 +171,7 @@ function withinGrace(agent: AgentRecord, now: number, graceMs: number): boolean 
 }
 
 /** The part of a tick that frees resources: every runtime that is not protected, in one listing. */
-async function releaseRuntimes(): Promise<ReleaseOutcome> {
+async function releaseRuntimes(config: AutoReleaseConfig): Promise<ReleaseOutcome> {
   const released: Array<{ agentId: string; title: string | null }> = [];
   let skipped = 0;
   let error: string | null = null;
@@ -197,7 +179,6 @@ async function releaseRuntimes(): Promise<ReleaseOutcome> {
   try {
     const client = await getDaemonClient();
     agents = await listAllAgents((options) => client.fetchAgents(options as never));
-    const graceMs = graceMinutes() * 60000;
     const now = Date.now();
     for (const agent of agents) {
       if (agent.archivedAt !== null || agent.status === "closed") {
@@ -211,7 +192,7 @@ async function releaseRuntimes(): Promise<ReleaseOutcome> {
         }
         continue;
       }
-      if (withinGrace(agent, now, graceMs)) {
+      if (withinGrace(agent, now, config.graceMs)) {
         skipped += 1;
         continue;
       }
@@ -258,24 +239,36 @@ async function fetchAgent(client: DaemonSessionClient, agentId: string): Promise
 }
 
 /**
- * The once-a-day destructive phase. It runs after the tick has been recorded, so a slow or failing
- * cleanup can never change what the sweep reported, and it is skipped entirely when the listing
- * failed: without it "no session records" would be true for every workspace.
+ * The destructive phase. It runs after the tick has been recorded, so a slow or failing cleanup can
+ * never change what the sweep reported, and it is skipped entirely when the listing failed: without
+ * it "no session records" would be true for every workspace.
  */
-async function cleanupWorkspaces(state: AutoReleaseSnapshot, outcome: ReleaseOutcome): Promise<void> {
-  if (cleaning || outcome.agents === null || !cleanupDue(state)) {
+async function cleanupWorkspaces(
+  state: AutoReleaseSnapshot,
+  outcome: ReleaseOutcome,
+  config: AutoReleaseConfig,
+): Promise<void> {
+  if (cleaning || outcome.agents === null || !cleanupDue(state, config)) {
     return;
   }
   cleaning = true;
+  const mode: CleanupMode = config.purgeArchivedWorkspaces ? "purge" : "empty";
   try {
-    const removed = await removeEmptyWorkspaces(outcome.agents);
-    const finished = {
+    const result = await runCleanup(outcome, config, mode);
+    const finished: AutoReleaseSnapshot = {
       ...state,
-      lastRemovedWorkspaces: removed,
+      lastRemovedWorkspaces: result.removed,
+      lastCleanupMode: mode,
+      lastDeletedSessions: result.deletedSessions,
       lastCleanupAt: new Date().toISOString(),
     };
     await writeState(finished);
     status = statusFrom(finished, running);
+    if (mode === "purge") {
+      console.log(
+        `agent-manager purged ${result.removed.length} archived workspace(s) and ${result.deletedSessions} provider session file(s)`,
+      );
+    }
   } catch (cleanupError) {
     console.log(`agent-manager could not clean up workspaces: ${describe(cleanupError)}`);
   } finally {
@@ -283,20 +276,42 @@ async function cleanupWorkspaces(state: AutoReleaseSnapshot, outcome: ReleaseOut
   }
 }
 
-function cleanupDue(state: AutoReleaseSnapshot): boolean {
-  const previous = Date.parse(state.lastCleanupAt ?? "");
-  return !Number.isFinite(previous) || Date.now() - previous >= cleanupIntervalMs();
+interface CleanupResult {
+  removed: Array<{ workspaceId: string; name: string | null }>;
+  deletedSessions: number;
 }
 
-async function removeEmptyWorkspaces(agents: readonly AgentRecord[]): Promise<Array<{ workspaceId: string; name: string | null }>> {
+async function runCleanup(
+  outcome: ReleaseOutcome,
+  config: AutoReleaseConfig,
+  mode: CleanupMode,
+): Promise<CleanupResult> {
+  const client = await getDaemonClient();
+  const paseo: PaseoLike = {
+    agents: { list: (options) => client.fetchAgents(options as never) },
+  };
+  if (mode === "purge") {
+    const purged = await purgeArchivedWorkspaces(paseo, {
+      deleteProviderSessions: config.deleteProviderSessions,
+    });
+    return { removed: purged.removed, deletedSessions: purged.deletedSessions };
+  }
+  return { removed: await removeEmptyWorkspaces(paseo, outcome.agents ?? []), deletedSessions: 0 };
+}
+
+function cleanupDue(state: AutoReleaseSnapshot, config: AutoReleaseConfig): boolean {
+  const previous = Date.parse(state.lastCleanupAt ?? "");
+  return !Number.isFinite(previous) || Date.now() - previous >= config.cleanupIntervalMs;
+}
+
+async function removeEmptyWorkspaces(
+  paseo: PaseoLike,
+  agents: readonly AgentRecord[],
+): Promise<Array<{ workspaceId: string; name: string | null }>> {
   const removed: Array<{ workspaceId: string; name: string | null }> = [];
   try {
     const rows = await listWorkspaceRows();
-    const client = await getDaemonClient();
     const busy = new Set(agents.map((agent) => agent.workspaceId).filter((id): id is string => id !== null));
-    const paseo: PaseoLike = {
-      agents: { list: (options) => client.fetchAgents(options as never) },
-    };
     for (const row of rows) {
       if (row.archivedAt === null || busy.has(row.workspaceId)) {
         continue;
@@ -327,22 +342,26 @@ async function archiveMergedWorktreesOnce(): Promise<void> {
   }
 }
 
-async function recordRun(state: AutoReleaseSnapshot, outcome: ReleaseOutcome): Promise<AutoReleaseSnapshot> {
+async function recordRun(
+  state: AutoReleaseSnapshot,
+  outcome: ReleaseOutcome,
+  config: AutoReleaseConfig,
+): Promise<AutoReleaseSnapshot> {
   const finished = withDerived({
     ...state,
     lastRunAt: new Date().toISOString(),
     lastReleased: outcome.released,
     lastSkipped: outcome.skipped,
     lastError: outcome.error,
-  });
+  }, config);
   await writeState(finished);
   return finished;
 }
 
-function withDerived(state: AutoReleaseSnapshot): AutoReleaseSnapshot {
+function withDerived(state: AutoReleaseSnapshot, config: AutoReleaseConfig): AutoReleaseSnapshot {
   const parsed = Date.parse(state.lastRunAt ?? "");
   const anchor = Number.isFinite(parsed) ? parsed : Date.now();
-  return { ...state, nextRunAt: new Date(anchor + sweepIntervalMs()).toISOString() };
+  return { ...state, nextRunAt: new Date(anchor + config.sweepIntervalMs).toISOString() };
 }
 
 async function readStoredState(): Promise<Partial<AutoReleaseSnapshot>> {
