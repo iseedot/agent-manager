@@ -1,4 +1,4 @@
-import { beginDaemonClientUse, endDaemonClientUse, getDaemonClient } from "./daemon-client";
+import { getDaemonClient } from "./daemon-client";
 import { fireAndForget } from "./guard";
 import { noticeName, recordNotice } from "./notices";
 import { isManagedWorktreePath } from "./project-worktrees";
@@ -40,51 +40,41 @@ export async function archiveMergedWorktrees(
     return [];
   }
 
-  const useInjected = client !== undefined;
-  if (!useInjected) {
-    beginDaemonClientUse();
-  }
-  try {
-    const daemon = client ?? ((await getDaemonClient()) as unknown as ArchiveClient);
-    const archived: string[] = [];
-    for (const row of rowsToCheck) {
-      const status = await daemon.getCheckoutStatus(row.cwd).catch(() => null);
-      if (!status || status.forge?.pullRequest?.isMerged !== true) {
-        continue;
-      }
-      if (status.git?.isDirty === true) {
-        continue;
-      }
-      const ahead = status.git?.aheadOfOrigin;
-      if (typeof ahead === "number" && ahead > 0) {
-        continue;
-      }
-      try {
-        await daemon.archiveWorkspace(row.workspaceId);
-        archived.push(row.workspaceId);
-        recordNotice({
-          level: "info",
-          kind: "worktree-merged",
-          directory: row.cwd,
-          title: `${noticeName(row.cwd)} · merged — archived`,
-          message: `Archived ${row.workspaceId} because its change request is merged, the worktree is clean and nothing is unpushed.`,
-        });
-      } catch (error) {
-        recordNotice({
-          level: "warning",
-          kind: "worktree-archive-failed",
-          directory: row.cwd,
-          title: `${noticeName(row.cwd)} · archive failed`,
-          message: `Could not archive ${row.workspaceId} after its change request merged: ${describe(error)}`,
-        });
-      }
+  const daemon = client ?? ((await getDaemonClient()) as unknown as ArchiveClient);
+  const archived: string[] = [];
+  for (const row of rowsToCheck) {
+    const status = await daemon.getCheckoutStatus(row.cwd).catch(() => null);
+    if (!status || status.forge?.pullRequest?.isMerged !== true) {
+      continue;
     }
-    return archived;
-  } finally {
-    if (!useInjected) {
-      endDaemonClientUse();
+    if (status.git?.isDirty === true) {
+      continue;
+    }
+    const ahead = status.git?.aheadOfOrigin;
+    if (typeof ahead === "number" && ahead > 0) {
+      continue;
+    }
+    try {
+      await daemon.archiveWorkspace(row.workspaceId);
+      archived.push(row.workspaceId);
+      recordNotice({
+        level: "info",
+        kind: "worktree-merged",
+        directory: row.cwd,
+        title: `${noticeName(row.cwd)} · merged — archived`,
+        message: `Archived ${row.workspaceId} because its change request is merged, the worktree is clean and nothing is unpushed.`,
+      });
+    } catch (error) {
+      recordNotice({
+        level: "warning",
+        kind: "worktree-archive-failed",
+        directory: row.cwd,
+        title: `${noticeName(row.cwd)} · archive failed`,
+        message: `Could not archive ${row.workspaceId} after its change request merged: ${describe(error)}`,
+      });
     }
   }
+  return archived;
 }
 
 function describe(error: unknown): string {

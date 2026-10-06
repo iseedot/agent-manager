@@ -7,7 +7,6 @@ declare const require: ((specifier: string) => unknown) | undefined;
 
 const CLIENT_MODULE = "@getpaseo/client/internal/daemon-client";
 const CLIENT_ID_PREFIX = "agent-manager-";
-const DEFAULT_IDLE_CLOSE_MS = 180000;
 
 export interface WorkspaceRecoveryState {
   kind: string;
@@ -57,7 +56,6 @@ export interface DaemonSessionClient {
  * projectId, so the workspace is not filed under a project built from the worktree path.
  */
 export async function registerProject(cwd: string): Promise<string | null> {
-  beginDaemonClientUse();
   try {
     const client = await getDaemonClient();
     const payload = await client.addProject(cwd);
@@ -65,8 +63,6 @@ export async function registerProject(cwd: string): Promise<string | null> {
     return typeof projectId === "string" && projectId.length > 0 ? projectId : null;
   } catch {
     return null;
-  } finally {
-    endDaemonClientUse();
   }
 }
 
@@ -94,52 +90,12 @@ interface DaemonClientConstructor {
   new (config: Record<string, unknown>): DaemonSessionClient;
 }
 
+// One lazily created connection, kept for the lifetime of the plugin and closed when it unloads.
+// It used to be reference-counted and closed after three idle minutes, which stopped meaning
+// anything once the sweep started running every minute: the close timer was re-armed before it
+// could fire, so the connection was resident anyway. Two files (this one, and the sweep) had to
+// keep the count straight for no benefit, so the count is gone.
 let pendingClient: Promise<DaemonSessionClient> | null = null;
-let activeUses = 0;
-let idleTimer: ReturnType<typeof setTimeout> | null = null;
-
-export function beginDaemonClientUse(): void {
-  activeUses += 1;
-  cancelIdleClose();
-}
-
-export function endDaemonClientUse(): void {
-  activeUses = Math.max(0, activeUses - 1);
-  if (activeUses > 0) {
-    return;
-  }
-  cancelIdleClose();
-  scheduleIdleClose();
-}
-
-function scheduleIdleClose(): void {
-  const timeout = idleCloseMs();
-  if (timeout <= 0) {
-    return;
-  }
-  idleTimer = setTimeout(() => {
-    idleTimer = null;
-    if (activeUses === 0) {
-      void disposeDaemonClient();
-    }
-  }, timeout);
-}
-
-function cancelIdleClose(): void {
-  if (idleTimer) {
-    clearTimeout(idleTimer);
-    idleTimer = null;
-  }
-}
-
-function idleCloseMs(): number {
-  const raw = process.env.PASEO_AGENT_MANAGER_CLIENT_IDLE_MS;
-  if (raw === undefined || raw.trim().length === 0) {
-    return DEFAULT_IDLE_CLOSE_MS;
-  }
-  const configured = Number(raw);
-  return Number.isFinite(configured) && configured >= 0 ? configured : DEFAULT_IDLE_CLOSE_MS;
-}
 
 export async function getDaemonClient(): Promise<DaemonSessionClient> {
   if (!pendingClient) {
@@ -154,8 +110,8 @@ export async function getDaemonClient(): Promise<DaemonSessionClient> {
 }
 
 export async function disposeDaemonClient(): Promise<void> {
-  cancelIdleClose();
-  const pending = pendingClient;  pendingClient = null;
+  const pending = pendingClient;
+  pendingClient = null;
   if (!pending) {
     return;
   }

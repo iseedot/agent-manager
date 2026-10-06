@@ -3,12 +3,7 @@ import { join } from "node:path";
 import { readFile, readdir } from "node:fs/promises";
 
 import { listAllAgents, type AgentRecord } from "./agents";
-import {
-  beginDaemonClientUse,
-  endDaemonClientUse,
-  getDaemonClient,
-  type DaemonSessionClient,
-} from "./daemon-client";
+import { getDaemonClient, type DaemonSessionClient } from "./daemon-client";
 import { releaseAgents } from "./actions";
 import type { AutoReleaseStatus } from "../shared/contracts";
 import { paseoHome } from "./daemon-mcp";
@@ -140,7 +135,6 @@ async function sweep(): Promise<void> {
     return;
   }
   running = true;
-  beginDaemonClientUse();
   const released: Array<{ agentId: string; title: string | null }> = [];
   let skipped = 0;
   let error: string | null = null;
@@ -180,7 +174,6 @@ async function sweep(): Promise<void> {
   } catch (sweepError) {
     error = describe(sweepError);
   } finally {
-    endDaemonClientUse();
     running = false;
   }
 

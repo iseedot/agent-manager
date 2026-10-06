@@ -153,12 +153,14 @@ in: a host can dial them back without a code edit, and a value that is not a pos
 | --- | --- | --- |
 | `PASEO_AGENT_MANAGER_IDLE_MINUTES` | `1` | minutes of idleness before a runtime is released |
 | `PASEO_AGENT_MANAGER_SWEEP_INTERVAL_MS` | `60000` | safety-sweep cadence, minimum `5000` |
-| `PASEO_AGENT_MANAGER_CLIENT_IDLE_MS` | `180000` | how long the plugin's own daemon connection stays open (`0` keeps it) |
 
 The sweep cadence matters as much as the window: with a 1-minute window a 15-minute net would let a
-runtime that missed its due timer linger for a quarter of an hour. The plugin's own daemon connection
-keeps its 3-minute idle close on purpose — closing it after a minute would drop and rebuild the socket
-on every sweep.
+runtime that missed its due timer linger for a quarter of an hour.
+
+The plugin's own daemon connection is opened lazily and kept for the lifetime of the plugin (closed on
+unload). It used to be reference-counted and closed after three idle minutes, but a one-minute sweep
+re-arms that timer before it can fire, so the connection was resident anyway — the count was removed
+rather than left pretending to save a localhost socket.
 
 Archived workspaces with no session records are removed by the sweep. There are no auto-release knobs in
 the UI: the plugin keeps only the last sweep result in `~/.paseo/agent-manager/auto-release.json`.
