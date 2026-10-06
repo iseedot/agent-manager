@@ -1,6 +1,6 @@
 import type { FactsPayload } from "../shared/contracts";
 import type { PaseoLike } from "./agents";
-import { readAutoReleaseStatus } from "./auto-release";
+import { idleMinutes, readAutoReleaseStatus } from "./auto-release";
 import { readSystemStats } from "./system";
 import { listAllTerminals, summarizeTerminalPresence, type TerminalLister } from "./terminals";
 
@@ -23,7 +23,7 @@ export async function buildFacts(paseo: PaseoLike): Promise<FactsPayload> {
       nextRunAt: null,
       dueAt: null,
       running: false,
-      idleMinutes: 10,
+      idleMinutes: idleMinutes(),
     },
   };
 }

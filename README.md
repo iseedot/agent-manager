@@ -9,7 +9,9 @@ A Paseo plugin with four jobs:
 3. **Project git bootstrap** — before Paseo provisions a workspace, an empty project directory gets
    `git init` plus one empty commit, so worktree workspaces work right away. Existing repositories and
    non-empty directories are never touched.
-4. **Auto-release** — idle agent runtimes are released automatically, whether or not the app is open.
+4. **Auto-release** — idle agent runtimes are released automatically, whether or not the app is open. This
+   branch runs the **aggressive profile: one minute of idleness**, not ten (see
+   [Auto-release](#auto-release)).
 
 The manager panel is gone; the plugin no longer ships a sidebar entry, a surface or any workspace /
 session management actions.
@@ -119,12 +121,47 @@ workspace triggers nothing at all: the hook only runs when a workspace is actual
 
 ## Auto-release
 
-A session is released once it has been idle for 10 minutes unless it is waiting on a permission. A
-15-minute safety sweep scans the host and releases everything past its window; when the earliest window
-closes sooner, a single timer wakes the sweep at that moment. It keeps working while the app is closed.
+A session is released once it has been idle for **1 minute** unless it is waiting on a permission or its
+runtime is still initializing. A **1-minute** safety sweep scans the host and releases everything past
+its window; when the earliest window closes sooner, a single timer wakes the sweep at that moment. It
+keeps working while the app is closed.
 
-Archived workspaces with no session records are removed by the sweep. There are no auto-release knobs:
-the plugin keeps only the last sweep result in `~/.paseo/agent-manager/auto-release.json`.
+| Profile | Release window | Safety sweep | Source |
+| --- | --- | --- | --- |
+| conservative | 10 minutes | 15 minutes | branch `conservative-idle-10min` (tag `baseline-idle-10min`) |
+| aggressive | 1 minute | 1 minute | this branch, `aggressive-idle-1min` |
+
+The plugin runs from source, so switching profiles is a checkout plus a reload — no rebuild:
+
+```bash
+git checkout conservative-idle-10min && paseo reload   # back to the 10-minute window
+git checkout aggressive-idle-1min && paseo reload      # this profile again
+```
+
+**One minute is aggressive on purpose.** A turn that finished and is merely unread is released a minute
+later, so the next message pays a provider resume. Nothing is lost: the release goes through the
+daemon's own close action (MCP `kill_agent`), so the record stays valid and the next message resumes
+the session. What is never released is a runtime that is `running`, waiting on a permission
+(`attentionReason: permission` or a pending permission request) or still `initializing` — the last
+one matters at this window: a slow provider boot (cold `npx`, first download) would otherwise be killed
+half-way through startup.
+
+The two numbers stay fixed at runtime — no UI switch, per the plugin's rules — but they are not compiled
+in: a host can dial them back without a code edit, and a value that is not a positive number is ignored.
+
+| Environment variable | Aggressive default | Meaning |
+| --- | --- | --- |
+| `PASEO_AGENT_MANAGER_IDLE_MINUTES` | `1` | minutes of idleness before a runtime is released |
+| `PASEO_AGENT_MANAGER_SWEEP_INTERVAL_MS` | `60000` | safety-sweep cadence, minimum `5000` |
+| `PASEO_AGENT_MANAGER_CLIENT_IDLE_MS` | `180000` | how long the plugin's own daemon connection stays open (`0` keeps it) |
+
+The sweep cadence matters as much as the window: with a 1-minute window a 15-minute net would let a
+runtime that missed its due timer linger for a quarter of an hour. The plugin's own daemon connection
+keeps its 3-minute idle close on purpose — closing it after a minute would drop and rebuild the socket
+on every sweep.
+
+Archived workspaces with no session records are removed by the sweep. There are no auto-release knobs in
+the UI: the plugin keeps only the last sweep result in `~/.paseo/agent-manager/auto-release.json`.
 
 Releasing goes through the daemon's own close action (MCP `kill_agent`), so the record stays valid and
 the next message resumes it.

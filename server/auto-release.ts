@@ -26,9 +26,13 @@ interface AutoReleaseSnapshot {
   nextRunAt: string | null;
 }
 
+// The aggressive profile: one minute of idleness instead of ten, and a one-minute safety sweep
+// instead of a fifteen-minute one. Both stay fixed at runtime (no UI switch) but can be dialed back
+// without a code edit: PASEO_AGENT_MANAGER_IDLE_MINUTES (>= 1), PASEO_AGENT_MANAGER_SWEEP_INTERVAL_MS.
 const STATE_PATH = "agent-manager/auto-release.json";
-const SWEEP_INTERVAL_MS = 15 * 60 * 1000;
-const IDLE_MINUTES = 10;
+const DEFAULT_SWEEP_INTERVAL_MS = 60 * 1000;
+const DEFAULT_IDLE_MINUTES = 1;
+const MIN_SWEEP_INTERVAL_MS = 5000;
 const DEFAULT_STATE: AutoReleaseSnapshot = {
   lastRunAt: null,
   lastReleased: [],
@@ -48,8 +52,22 @@ function publishStatus(next: AutoReleaseStatus): void {
   status = next;
 }
 
-function idleMinutes(): number {
-  return IDLE_MINUTES;
+function envNumber(name: string, fallback: number, minimum: number): number {
+  const raw = process.env[name];
+  if (raw === undefined || raw.trim().length === 0) {
+    return fallback;
+  }
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed >= minimum ? parsed : fallback;
+}
+
+/** The release window in minutes — the number the pill shows. */
+export function idleMinutes(): number {
+  return envNumber("PASEO_AGENT_MANAGER_IDLE_MINUTES", DEFAULT_IDLE_MINUTES, 1);
+}
+
+function sweepIntervalMs(): number {
+  return envNumber("PASEO_AGENT_MANAGER_SWEEP_INTERVAL_MS", DEFAULT_SWEEP_INTERVAL_MS, MIN_SWEEP_INTERVAL_MS);
 }
 
 /**
@@ -80,7 +98,7 @@ export function startAutoReleaseScheduler(): () => void {
   }
   fallbackTimer = setInterval(() => {
     fireAndForget(scheduledSweep(), "scheduled sweep");
-  }, SWEEP_INTERVAL_MS);
+  }, sweepIntervalMs());
   fireAndForget(seedStatusThenSweep(), "initial sweep");
   return () => {
     if (fallbackTimer) {
@@ -130,13 +148,15 @@ async function sweep(): Promise<void> {
   try {
     const client = await getDaemonClient();
     const agents = await listAllAgents((options) => client.fetchAgents(options as never));
-    const threshold = IDLE_MINUTES * 60000;
+    const threshold = idleMinutes() * 60000;
     const now = Date.now();
     for (const agent of agents) {
       if (agent.archivedAt !== null || agent.status === "closed") {
         continue;
       }
-      if (agent.status === "running" || blocksRelease(agent)) {
+      // A runtime that is still starting up is never a release candidate: at a one-minute window a
+      // slow provider boot would otherwise be killed half-way through initialization.
+      if (agent.status === "running" || agent.status === "initializing" || blocksRelease(agent)) {
         if (agent.status !== "running") {
           skipped += 1;
         }
@@ -186,7 +206,7 @@ async function sweep(): Promise<void> {
     nextRunAt: finished?.nextRunAt ?? null,
     dueAt: nextDueAt === null ? null : new Date(nextDueAt).toISOString(),
     running: false,
-    idleMinutes: IDLE_MINUTES,
+    idleMinutes: idleMinutes(),
   });
   armNextDue(nextDueAt);
 }
@@ -206,7 +226,7 @@ async function releaseIdleAgent(agentId: string, known?: AgentRecord[]): Promise
   try {
     const client = await getDaemonClient();
     const current = known?.find((agent) => agent.id === agentId) ?? (await fetchAgent(client, agentId));
-    if (!current || current.status === "running" || current.status === "closed") {
+    if (!current || current.status === "running" || current.status === "initializing" || current.status === "closed") {
       return "skipped";
     }
     if (blocksRelease(current) || current.archivedAt !== null) {
@@ -278,7 +298,7 @@ async function recordRun(
 function withDerived(state: AutoReleaseSnapshot): AutoReleaseSnapshot {
   const parsed = Date.parse(state.lastRunAt ?? "");
   const anchor = Number.isFinite(parsed) ? parsed : Date.now();
-  return { ...state, nextRunAt: new Date(anchor + SWEEP_INTERVAL_MS).toISOString() };
+  return { ...state, nextRunAt: new Date(anchor + sweepIntervalMs()).toISOString() };
 }
 
 async function resolveLastActivityAt(agent: AgentRecord): Promise<number | null> {
@@ -295,7 +315,8 @@ async function readLastActivity(recordPath: string | null, fallback: string | nu
         return parsedMs;
       }
     } catch {
-      return null;
+      // Not evidence of idleness: fall through to the daemon's stamp, which a one-minute window
+      // would otherwise act on at once.
     }
   }
   const updatedMs = Date.parse(fallback ?? "");
