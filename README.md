@@ -205,17 +205,19 @@ value that is not a positive number is ignored:
 | `PASEO_AGENT_MANAGER_PURGE_ARCHIVED` | `1`/`0` — purge mode |
 | `PASEO_AGENT_MANAGER_DELETE_PROVIDER_SESSIONS` | `1`/`0` — delete the pi transcript too |
 
-### Other profiles
+### Earlier profiles
 
-The plugin runs from source, so switching profiles is a checkout plus a reload — no rebuild:
+Two earlier designs are kept as tags, not branches, because both are ancestors of this code: a host
+that wants one of them back checks it out and reloads — no rebuild.
+
+| Tag | What it does |
+| --- | --- |
+| `baseline-idle-10min` | upstream: a 10-minute idle window, a 15-minute sweep and a due timer |
+| `idle-1min-profile` | experiment: a 1-minute window with a 1-minute sweep |
 
 ```bash
-git checkout conservative-idle-10min && paseo reload   # upstream: 10-minute idle window, 15-minute sweep
-git checkout aggressive-idle-1min && paseo reload      # experiment: 1-minute window, 1-minute sweep
-git checkout single-timer-sweep && paseo reload        # this one: a single 15-minute tick
+git checkout baseline-idle-10min && paseo reload
 ```
-
-Tags `baseline-idle-10min` and `idle-1min-profile` mark the same two versions.
 
 ## Install
 
