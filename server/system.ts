@@ -17,7 +17,6 @@ export interface SystemStats {
   uptimeSeconds: number | null;
 }
 
-const SAMPLE_WINDOW_MS = 200;
 const MIN_WINDOW_MS = 400;
 
 interface CpuTicks {
@@ -26,6 +25,7 @@ interface CpuTicks {
 }
 
 let lastTicks: CpuTicks | null = null;
+let lastTicksAt = 0;
 let lastPercent: { value: number | null; at: number } | null = null;
 
 export async function readSystemStats(): Promise<SystemStats> {
@@ -81,12 +81,13 @@ async function cpuPercentSinceLastSample(ticks: CpuTicks | null): Promise<number
   }
   const now = Date.now();
   const previous = lastTicks;
-  if (previous === null) {
-    const seeded = await seedTicks(ticks);
-    return seeded;
-  }
+  const previousAt = lastTicksAt;
   lastTicks = ticks;
-  if (now - (lastPercent?.at ?? 0) < MIN_WINDOW_MS) {
+  lastTicksAt = now;
+  if (previous === null || now - previousAt < MIN_WINDOW_MS) {
+    // Nothing to subtract yet (the first sample after load) or too short a window to mean
+    // anything. Report the last real value — null until a full interval has been observed —
+    // instead of sleeping for a second sample, which measured 200ms of a busy load.
     return lastPercent?.value ?? null;
   }
   const percent = percentBetween(previous, ticks);
@@ -94,18 +95,6 @@ async function cpuPercentSinceLastSample(ticks: CpuTicks | null): Promise<number
     lastPercent = { value: percent, at: now };
   }
   return lastPercent?.value ?? null;
-}
-
-async function seedTicks(first: CpuTicks): Promise<number | null> {
-  await delay(SAMPLE_WINDOW_MS);
-  const second = await readCpuTicks();
-  if (second === null) {
-    return null;
-  }
-  lastTicks = second;
-  const percent = percentBetween(first, second);
-  lastPercent = { value: percent, at: Date.now() };
-  return percent;
 }
 
 function percentBetween(previous: CpuTicks, next: CpuTicks): number | null {
@@ -181,8 +170,4 @@ async function readText(path: string): Promise<string | null> {
   } catch {
     return null;
   }
-}
-
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }
