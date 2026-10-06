@@ -25,6 +25,7 @@ interface AutoReleaseSnapshot {
   nextRunAt: string | null;
   lastCleanupAt: string | null;
   lastCleanupMode: CleanupMode | null;
+  lastCleanupSessions: boolean | null;
   lastDeletedSessions: number;
 }
 
@@ -49,6 +50,7 @@ const DEFAULT_STATE: AutoReleaseSnapshot = {
   nextRunAt: null,
   lastCleanupAt: null,
   lastCleanupMode: null,
+  lastCleanupSessions: null,
   lastDeletedSessions: 0,
 };
 
@@ -248,17 +250,18 @@ async function cleanupWorkspaces(
   outcome: ReleaseOutcome,
   config: AutoReleaseConfig,
 ): Promise<void> {
-  if (cleaning || outcome.agents === null || !cleanupDue(state, config)) {
+  const mode: CleanupMode = config.purgeArchivedWorkspaces ? "purge" : "empty";
+  if (cleaning || outcome.agents === null || !cleanupDue(state, config, mode)) {
     return;
   }
   cleaning = true;
-  const mode: CleanupMode = config.purgeArchivedWorkspaces ? "purge" : "empty";
   try {
     const result = await runCleanup(outcome, config, mode);
     const finished: AutoReleaseSnapshot = {
       ...state,
       lastRemovedWorkspaces: result.removed,
       lastCleanupMode: mode,
+      lastCleanupSessions: mode === "purge" && config.deleteProviderSessions,
       lastDeletedSessions: result.deletedSessions,
       lastCleanupAt: new Date().toISOString(),
     };
@@ -299,7 +302,17 @@ async function runCleanup(
   return { removed: await removeEmptyWorkspaces(paseo, outcome.agents ?? []), deletedSessions: 0 };
 }
 
-function cleanupDue(state: AutoReleaseSnapshot, config: AutoReleaseConfig): boolean {
+/**
+ * Due when the interval has passed — or when the switches changed since the last cleanup, so
+ * turning the purge (or the session-file switch) on does not wait out a day before doing anything.
+ */
+function cleanupDue(state: AutoReleaseSnapshot, config: AutoReleaseConfig, mode: CleanupMode): boolean {
+  if (state.lastCleanupMode !== mode) {
+    return true;
+  }
+  if (mode === "purge" && state.lastCleanupSessions !== config.deleteProviderSessions) {
+    return true;
+  }
   const previous = Date.parse(state.lastCleanupAt ?? "");
   return !Number.isFinite(previous) || Date.now() - previous >= config.cleanupIntervalMs;
 }

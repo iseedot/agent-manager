@@ -173,6 +173,9 @@ Every other provider either keeps its transcript where this plugin cannot know (
 agents: copilot, cursor, kimi, kiro, trae, hermes) or names it with an id instead of a path (claude,
 codex) — guessed paths would risk deleting a file that was never ours, so those are left alone.
 
+Switching either of those on makes the cleanup due on the next tick instead of waiting out the
+interval, so a purge does not sit for a day after it was asked for.
+
 This is irreversible: after the purge the workspace and its sessions cannot be restored. Nothing in the
 plugin ever deletes project content or a worktree checkout, only records and the pi transcript.
 
