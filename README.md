@@ -9,8 +9,9 @@ A Paseo plugin with four jobs:
 3. **Project git bootstrap** — before Paseo provisions a workspace, an empty project directory gets
    `git init` plus one empty commit, so worktree workspaces work right away. Existing repositories and
    non-empty directories are never touched.
-4. **Auto-release** — idle agent runtimes are released automatically, whether or not the app is open. This
-   branch runs the **aggressive profile: one minute of idleness**, not ten (see
+4. **Auto-release** — agent runtimes are released once their turn is over, whether or not the app is
+   open: one 15-minute tick releases everything that is not working or waiting on you, cleans up once a
+   day, and applies Paseo's merged-worktree archiving to the plugin's own worktrees (see
    [Auto-release](#auto-release)).
 
 The manager panel is gone; the plugin no longer ships a sidebar entry, a surface or any workspace /
@@ -24,8 +25,7 @@ Opening the pill shows:
 
 - one host line from the same facts payload — `load 1.08 · cpu 0% · mem 81%/17% · disk 11% free ·
   0 terminals` (memory, swap and root-filesystem percentages) — then `Sweep 03:01 · 03:16` for the
-  auto-release state (`due 03:12` once a release waits, `sweeping now` while a sweep runs, `error: …`
-  when one failed), then `Tab Created 12h ago · Last 7m ago · Updated 4m ago`. Any device can read the
+  auto-release state (`sweeping now` while a tick runs, `error: …` when one failed), then `Tab Created 12h ago · Last 7m ago · Updated 4m ago`. Any device can read the
   plugin's state this way, without a CLI and without a reload,
 - **NOTICES**, when there are any: one short line each (`<name> · what happened`, e.g.
   `hardcore-dingo · worktree ready`, `dirty-monkey · uncommitted changes — remove?`), newest and most
@@ -121,52 +121,56 @@ workspace triggers nothing at all: the hook only runs when a workspace is actual
 
 ## Auto-release
 
-A session is released once it has been idle for **1 minute** unless it is waiting on a permission or its
-runtime is still initializing. A **1-minute** safety sweep scans the host and releases everything past
-its window; when the earliest window closes sooner, a single timer wakes the sweep at that moment. It
-keeps working while the app is closed.
+**One timer.** A tick every fifteen minutes does all of it, and it keeps working while the app is
+closed:
 
-| Profile | Release window | Safety sweep | Source |
-| --- | --- | --- | --- |
-| conservative | 10 minutes | 15 minutes | branch `conservative-idle-10min` (tag `baseline-idle-10min`) |
-| aggressive | 1 minute | 1 minute | this branch, `aggressive-idle-1min` |
+1. **Release.** The daemon's session list is read once and every runtime that is neither working nor
+   waiting on the user is released. There is no idle window any more — the tick is the resolution, so a
+   runtime lives at most one tick past its last turn. Three protections remain: a runtime that is
+   `running`, one that is still `initializing` (a slow provider boot must not be killed half-way) and
+   one waiting on a permission (`attentionReason: permission` or a pending permission request) are never
+   released, and a runtime the daemon touched inside the **grace window** (five minutes) is left for the
+   next tick, so a turn that ends just before a tick is not released while its answer is still being
+   read.
+2. **Cleanup, once a day.** Archived workspaces with no session records left are deleted. It is the only
+   destructive step and nothing depends on it being prompt, so it rides on the tick but at most every
+   twenty-four hours. The timestamp lives in the state file, so a reload cannot postpone it forever, and
+   the session list the release pass already read is reused instead of listing twice. When that listing
+   failed the phase is skipped entirely — "no session records" would otherwise be true for every
+   workspace.
+3. **Merged worktrees.** Paseo archives a worktree when its change request merges, but only for the
+   worktrees it created itself. Project-local ones (`<project>/.worktrees/<slug>`) are the plugin's, so
+   the same rule runs here: merged pull request, nothing uncommitted, nothing unpushed → the workspace
+   is archived and the clean worktree removed.
+
+Nothing else wakes up: no per-session timer, no due timer, and no second timer for the phases a tick
+triggers. A phase that is still running when the next tick arrives is skipped by its own flag, so slow
+work can never run twice and can never hold the release pass back.
+
+Releasing goes through the daemon's own close action (MCP `kill_agent`), so the record stays valid and
+the next message resumes the session. The numbers stay fixed at runtime — no UI switch — but they are
+not compiled in (a value that is not a positive number is ignored):
+
+| Environment variable | Default | Meaning |
+| --- | --- | --- |
+| `PASEO_AGENT_MANAGER_SWEEP_INTERVAL_MS` | `900000` | tick cadence, minimum `5000` |
+| `PASEO_AGENT_MANAGER_GRACE_MINUTES` | `5` | a runtime touched this recently is left for the next tick (`0` releases on the tick) |
+| `PASEO_AGENT_MANAGER_CLEANUP_INTERVAL_MS` | `86400000` | how often the workspace cleanup runs, minimum `60000` |
+
+The plugin's own daemon connection is opened lazily and kept for the lifetime of the plugin (closed on
+unload), and the plugin keeps only the last tick in `~/.paseo/agent-manager/auto-release.json`.
+
+### Other profiles
 
 The plugin runs from source, so switching profiles is a checkout plus a reload — no rebuild:
 
 ```bash
-git checkout conservative-idle-10min && paseo reload   # back to the 10-minute window
-git checkout aggressive-idle-1min && paseo reload      # this profile again
+git checkout conservative-idle-10min && paseo reload   # upstream: 10-minute idle window, 15-minute sweep
+git checkout aggressive-idle-1min && paseo reload      # experiment: 1-minute window, 1-minute sweep
+git checkout single-timer-sweep && paseo reload        # this one: a single 15-minute tick
 ```
 
-**One minute is aggressive on purpose.** A turn that finished and is merely unread is released a minute
-later, so the next message pays a provider resume. Nothing is lost: the release goes through the
-daemon's own close action (MCP `kill_agent`), so the record stays valid and the next message resumes
-the session. What is never released is a runtime that is `running`, waiting on a permission
-(`attentionReason: permission` or a pending permission request) or still `initializing` — the last
-one matters at this window: a slow provider boot (cold `npx`, first download) would otherwise be killed
-half-way through startup.
-
-The two numbers stay fixed at runtime — no UI switch, per the plugin's rules — but they are not compiled
-in: a host can dial them back without a code edit, and a value that is not a positive number is ignored.
-
-| Environment variable | Aggressive default | Meaning |
-| --- | --- | --- |
-| `PASEO_AGENT_MANAGER_IDLE_MINUTES` | `1` | minutes of idleness before a runtime is released |
-| `PASEO_AGENT_MANAGER_SWEEP_INTERVAL_MS` | `60000` | safety-sweep cadence, minimum `5000` |
-
-The sweep cadence matters as much as the window: with a 1-minute window a 15-minute net would let a
-runtime that missed its due timer linger for a quarter of an hour.
-
-The plugin's own daemon connection is opened lazily and kept for the lifetime of the plugin (closed on
-unload). It used to be reference-counted and closed after three idle minutes, but a one-minute sweep
-re-arms that timer before it can fire, so the connection was resident anyway — the count was removed
-rather than left pretending to save a localhost socket.
-
-Archived workspaces with no session records are removed by the sweep. There are no auto-release knobs in
-the UI: the plugin keeps only the last sweep result in `~/.paseo/agent-manager/auto-release.json`.
-
-Releasing goes through the daemon's own close action (MCP `kill_agent`), so the record stays valid and
-the next message resumes it.
+Tags `baseline-idle-10min` and `idle-1min-profile` mark the same two versions.
 
 ## Install
 

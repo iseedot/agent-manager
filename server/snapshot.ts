@@ -1,6 +1,6 @@
 import type { FactsPayload } from "../shared/contracts";
 import type { PaseoLike } from "./agents";
-import { idleMinutes, readAutoReleaseStatus } from "./auto-release";
+import { readAutoReleaseStatus } from "./auto-release";
 import { readSystemStats } from "./system";
 import { listAllTerminals, summarizeTerminalPresence, type TerminalLister } from "./terminals";
 
@@ -21,9 +21,7 @@ export async function buildFacts(paseo: PaseoLike): Promise<FactsPayload> {
       removedWorkspaces: 0,
       error: "auto-release status unavailable",
       nextRunAt: null,
-      dueAt: null,
       running: false,
-      idleMinutes: idleMinutes(),
     },
   };
 }

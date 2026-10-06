@@ -34,9 +34,7 @@ export const autoReleaseStatusSchema = z.object({
   removedWorkspaces: z.number().int(),
   error: z.string().nullable(),
   nextRunAt: z.string().nullable(),
-  dueAt: z.string().nullable(),
   running: z.boolean(),
-  idleMinutes: z.number(),
 });
 
 export type AutoReleaseStatus = z.infer<typeof autoReleaseStatusSchema>;

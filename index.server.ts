@@ -1,7 +1,6 @@
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 
 import { factsRpc, gitNoticesRpc, workspacesRpc } from "./shared/contracts";
-import { startMergedWorktreeArchiver } from "./server/auto-archive";
 import { startAutoReleaseScheduler } from "./server/auto-release";
 import type { PaseoLike } from "./server/agents";
 import { disposeDaemonClient, resolveServerId } from "./server/daemon-client";
@@ -61,10 +60,8 @@ export default function contribute(server: PluginServerContext) {
   });
 
   const stopAutoRelease = startAutoReleaseScheduler();
-  const stopMergedWorktreeArchiver = startMergedWorktreeArchiver();
 
   return () => {
-    stopMergedWorktreeArchiver();
     stopAutoRelease();
     removeCrashGuards();
     void disposeDaemonClient();

@@ -77,9 +77,7 @@ export function sweepLine(status: FactsPayload["autoRelease"]): string {
     status.running === true
       ? ["Sweep sweeping now"]
       : [status.lastRunAt ? `Sweep ${clock(status.lastRunAt)}` : "Sweep never ran"];
-  if (status.dueAt) {
-    parts.push(`due ${clock(status.dueAt)}`);
-  } else if (status.nextRunAt) {
+  if (status.nextRunAt) {
     parts.push(clock(status.nextRunAt));
   }
   if (status.error) {

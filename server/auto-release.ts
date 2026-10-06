@@ -1,7 +1,8 @@
 import { join } from "node:path";
 
-import { readFile, readdir } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 
+import { archiveMergedWorktrees } from "./auto-archive";
 import { listAllAgents, type AgentRecord } from "./agents";
 import { getDaemonClient, type DaemonSessionClient } from "./daemon-client";
 import { releaseAgents } from "./actions";
@@ -19,14 +20,26 @@ interface AutoReleaseSnapshot {
   lastSkipped: number;
   lastError: string | null;
   nextRunAt: string | null;
+  lastCleanupAt: string | null;
 }
 
-// The aggressive profile: one minute of idleness instead of ten, and a one-minute safety sweep
-// instead of a fifteen-minute one. Both stay fixed at runtime (no UI switch) but can be dialed back
-// without a code edit: PASEO_AGENT_MANAGER_IDLE_MINUTES (>= 1), PASEO_AGENT_MANAGER_SWEEP_INTERVAL_MS.
+// One timer runs the whole plugin, every fifteen minutes by default, and one tick does three
+// things:
+//   1. release every runtime that is neither working nor waiting on the user — there is no idle
+//      window any more, so the tick is the resolution, and a grace window keeps a turn that ended
+//      seconds ago from being released on the tick it lands on;
+//   2. every twenty-four hours, drop archived workspaces that have no session records left. This is
+//      the only destructive step and nothing depends on it being prompt, so it does not ride along
+//      on every tick;
+//   3. apply Paseo's "a merged change request archives the worktree" rule to the project-local
+//      worktrees, which are the plugin's own and therefore invisible to Paseo.
+// There is no per-session timer and no second timer for the work the tick triggers. Knobs, fixed at
+// runtime (no UI switch): PASEO_AGENT_MANAGER_SWEEP_INTERVAL_MS, PASEO_AGENT_MANAGER_GRACE_MINUTES,
+// PASEO_AGENT_MANAGER_CLEANUP_INTERVAL_MS.
 const STATE_PATH = "agent-manager/auto-release.json";
-const DEFAULT_SWEEP_INTERVAL_MS = 60 * 1000;
-const DEFAULT_IDLE_MINUTES = 1;
+const DEFAULT_SWEEP_INTERVAL_MS = 15 * 60 * 1000;
+const DEFAULT_GRACE_MINUTES = 5;
+const DEFAULT_CLEANUP_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const MIN_SWEEP_INTERVAL_MS = 5000;
 const DEFAULT_STATE: AutoReleaseSnapshot = {
   lastRunAt: null,
@@ -35,17 +48,16 @@ const DEFAULT_STATE: AutoReleaseSnapshot = {
   lastSkipped: 0,
   lastError: null,
   nextRunAt: null,
+  lastCleanupAt: null,
 };
 
-let fallbackTimer: ReturnType<typeof setInterval> | null = null;
-let dueTimer: ReturnType<typeof setTimeout> | null = null;
+let sweepTimer: ReturnType<typeof setInterval> | null = null;
+/** One flag per phase: a slow phase must never let the next tick start the same work twice. */
 let running = false;
-/** Latest sweep result plus the armed due timer — what the pill shows next to the host stats. */
+let cleaning = false;
+let archiving = false;
+/** The last sweep as the pill reads it. */
 let status: AutoReleaseStatus | null = null;
-
-function publishStatus(next: AutoReleaseStatus): void {
-  status = next;
-}
 
 function envNumber(name: string, fallback: number, minimum: number): number {
   const raw = process.env[name];
@@ -56,68 +68,102 @@ function envNumber(name: string, fallback: number, minimum: number): number {
   return Number.isFinite(parsed) && parsed >= minimum ? parsed : fallback;
 }
 
-/** The release window in minutes — the number the pill shows. */
-export function idleMinutes(): number {
-  return envNumber("PASEO_AGENT_MANAGER_IDLE_MINUTES", DEFAULT_IDLE_MINUTES, 1);
-}
-
 function sweepIntervalMs(): number {
   return envNumber("PASEO_AGENT_MANAGER_SWEEP_INTERVAL_MS", DEFAULT_SWEEP_INTERVAL_MS, MIN_SWEEP_INTERVAL_MS);
 }
 
+function graceMinutes(): number {
+  return envNumber("PASEO_AGENT_MANAGER_GRACE_MINUTES", DEFAULT_GRACE_MINUTES, 0);
+}
+
+function cleanupIntervalMs(): number {
+  return envNumber("PASEO_AGENT_MANAGER_CLEANUP_INTERVAL_MS", DEFAULT_CLEANUP_INTERVAL_MS, 60 * 1000);
+}
+
+function statusFrom(state: AutoReleaseSnapshot, isRunning: boolean): AutoReleaseStatus {
+  return {
+    lastRunAt: state.lastRunAt,
+    released: state.lastReleased.length,
+    skipped: state.lastSkipped,
+    removedWorkspaces: state.lastRemovedWorkspaces.length,
+    error: state.lastError,
+    nextRunAt: state.nextRunAt,
+    running: isRunning,
+  };
+}
+
 /**
- * The auto-release numbers for the pill: last sweep, next scheduled sweep, and the release a due
- * timer is waiting for. Read from memory when the plugin has swept, else from the state file.
+ * The sweep numbers for the pill: the last tick and the next one. Read from memory once the plugin
+ * has ticked, else from the state file — any device can read them without a CLI or a reload.
  */
 export async function readAutoReleaseStatus(): Promise<AutoReleaseStatus> {
   if (status) {
     return { ...status, running };
   }
-  const stored = { ...DEFAULT_STATE, ...(await readStoredState()) };
-  return {
-    lastRunAt: stored.lastRunAt,
-    released: stored.lastReleased.length,
-    skipped: stored.lastSkipped,
-    removedWorkspaces: stored.lastRemovedWorkspaces.length,
-    error: stored.lastError,
-    nextRunAt: stored.nextRunAt,
-    dueAt: null,
-    running,
-    idleMinutes: idleMinutes(),
-  };
+  return statusFrom({ ...DEFAULT_STATE, ...(await readStoredState()) }, running);
 }
 
 export function startAutoReleaseScheduler(): () => void {
-  if (fallbackTimer) {
+  if (sweepTimer) {
     return () => {};
   }
-  fallbackTimer = setInterval(() => {
-    fireAndForget(scheduledSweep(), "scheduled sweep");
+  sweepTimer = setInterval(() => {
+    fireAndForget(tick(), "scheduled sweep");
   }, sweepIntervalMs());
-  fireAndForget(seedStatusThenSweep(), "initial sweep");
+  fireAndForget(seedStatusThenTick(), "initial sweep");
   return () => {
-    if (fallbackTimer) {
-      clearInterval(fallbackTimer);
-      fallbackTimer = null;
+    if (sweepTimer) {
+      clearInterval(sweepTimer);
+      sweepTimer = null;
     }
-    clearDueTimer();
   };
 }
 
-async function seedStatusThenSweep(): Promise<void> {
-  publishStatus(await readAutoReleaseStatus());
-  await scheduledSweep();
+async function seedStatusThenTick(): Promise<void> {
+  status = await readAutoReleaseStatus();
+  await tick();
 }
 
-function clearDueTimer(): void {
-  if (dueTimer) {
-    clearTimeout(dueTimer);
-    dueTimer = null;
+/** One tick: release first (the part that frees resources), then the two slow phases, then record. */
+async function tick(): Promise<void> {
+  if (running) {
+    return;
   }
+  // The flag goes up before the first await so two ticks can never release in parallel.
+  running = true;
+  let state: AutoReleaseSnapshot | null = null;
+  let outcome: ReleaseOutcome | null = null;
+  try {
+    state = { ...DEFAULT_STATE, ...(await readStoredState()) };
+    outcome = await releaseRuntimes();
+  } catch (tickError) {
+    console.log(`agent-manager sweep failed: ${describe(tickError)}`);
+  } finally {
+    running = false;
+  }
+  if (!state || !outcome) {
+    return;
+  }
+
+  const finished = await recordRun(state, outcome).catch((recordError) => {
+    console.log(`agent-manager could not record the sweep: ${describe(recordError)}`);
+    return null;
+  });
+  if (!finished) {
+    return;
+  }
+  status = statusFrom(finished, running);
+
+  await cleanupWorkspaces(finished, outcome);
+  await archiveMergedWorktreesOnce();
 }
 
-async function scheduledSweep(): Promise<void> {
-  await sweep();
+interface ReleaseOutcome {
+  released: Array<{ agentId: string; title: string | null }>;
+  skipped: number;
+  error: string | null;
+  /** The agents this tick saw, or null when the listing failed — the cleanup phase needs to know. */
+  agents: AgentRecord[] | null;
 }
 
 function blocksRelease(agent: { attentionReason?: unknown; pendingPermissions?: unknown } | null | undefined): boolean {
@@ -129,93 +175,62 @@ function blocksRelease(agent: { attentionReason?: unknown; pendingPermissions?: 
   return pendingCount > 0;
 }
 
-async function sweep(): Promise<void> {
-  const state = { ...DEFAULT_STATE, ...(await readStoredState()) };
-  if (running) {
-    return;
+/**
+ * A runtime the daemon touched inside the grace window is left alone. Without it a tick that lands
+ * just after a turn ends would release the runtime the user is about to read the answer from,
+ * which costs a cold start on the next message.
+ */
+function withinGrace(agent: AgentRecord, now: number, graceMs: number): boolean {
+  if (graceMs <= 0) {
+    return false;
   }
-  running = true;
+  const stamp = Date.parse(agent.updatedAt ?? "");
+  return Number.isFinite(stamp) && now - stamp < graceMs;
+}
+
+/** The part of a tick that frees resources: every runtime that is not protected, in one listing. */
+async function releaseRuntimes(): Promise<ReleaseOutcome> {
   const released: Array<{ agentId: string; title: string | null }> = [];
   let skipped = 0;
   let error: string | null = null;
-  let nextDueAt: number | null = null;
+  let agents: AgentRecord[] | null = null;
   try {
     const client = await getDaemonClient();
-    const agents = await listAllAgents((options) => client.fetchAgents(options as never));
-    const threshold = idleMinutes() * 60000;
+    agents = await listAllAgents((options) => client.fetchAgents(options as never));
+    const graceMs = graceMinutes() * 60000;
     const now = Date.now();
     for (const agent of agents) {
       if (agent.archivedAt !== null || agent.status === "closed") {
         continue;
       }
-      // A runtime that is still starting up is never a release candidate: at a one-minute window a
-      // slow provider boot would otherwise be killed half-way through initialization.
+      // A runtime that is starting up is never a release candidate: a slow provider boot would
+      // otherwise be killed half-way through initialization.
       if (agent.status === "running" || agent.status === "initializing" || blocksRelease(agent)) {
         if (agent.status !== "running") {
           skipped += 1;
         }
         continue;
       }
-      const lastActivity = await resolveLastActivityAt(agent);
-      const dueAt = (lastActivity ?? now) + threshold;
-      if (dueAt <= now) {
-        const result = await releaseIdleAgent(agent.id, agents);
-        if (result === "released") {
-          released.push({ agentId: agent.id, title: agent.title });
-        } else if (result === "skipped") {
-          skipped += 1;
-        } else {
-          error = result;
-        }
+      if (withinGrace(agent, now, graceMs)) {
+        skipped += 1;
         continue;
       }
-      nextDueAt = nextDueAt === null ? dueAt : Math.min(nextDueAt, dueAt);
+      const result = await releaseRuntime(agent.id, agents);
+      if (result === "released") {
+        released.push({ agentId: agent.id, title: agent.title });
+      } else if (result === "skipped") {
+        skipped += 1;
+      } else {
+        error = result;
+      }
     }
   } catch (sweepError) {
     error = describe(sweepError);
-  } finally {
-    running = false;
   }
-
-  let removed: Array<{ workspaceId: string; name: string | null }> = [];
-  try {
-    removed = await removeEmptyWorkspaces();
-  } catch (removalError) {
-    error = describe(removalError);
-  }
-
-  const finished = await recordRun(state, released, removed, skipped, error).catch(
-    (recordError) => {
-      console.log(`agent-manager could not record the sweep: ${describe(recordError)}`);
-      return null;
-    },
-  );
-  publishStatus({
-    lastRunAt: finished?.lastRunAt ?? new Date().toISOString(),
-    released: released.length,
-    skipped,
-    removedWorkspaces: removed.length,
-    error,
-    nextRunAt: finished?.nextRunAt ?? null,
-    dueAt: nextDueAt === null ? null : new Date(nextDueAt).toISOString(),
-    running: false,
-    idleMinutes: idleMinutes(),
-  });
-  armNextDue(nextDueAt);
+  return { released, skipped, error, agents };
 }
 
-function armNextDue(dueAt: number | null): void {
-  clearDueTimer();
-  if (dueAt === null) {
-    return;
-  }
-  dueTimer = setTimeout(() => {
-    dueTimer = null;
-    fireAndForget(scheduledSweep(), "due sweep");
-  }, Math.max(1000, dueAt - Date.now()));
-}
-
-async function releaseIdleAgent(agentId: string, known?: AgentRecord[]): Promise<"released" | "skipped" | string> {
+async function releaseRuntime(agentId: string, known?: AgentRecord[]): Promise<"released" | "skipped" | string> {
   try {
     const client = await getDaemonClient();
     const current = known?.find((agent) => agent.id === agentId) ?? (await fetchAgent(client, agentId));
@@ -225,9 +240,8 @@ async function releaseIdleAgent(agentId: string, known?: AgentRecord[]): Promise
     if (blocksRelease(current) || current.archivedAt !== null) {
       return "skipped";
     }
-    // The daemon's close action (MCP kill_agent), with a SIGTERM fallback plus a /proc
-    // re-check when the MCP route is unavailable (e.g. a password-protected daemon
-    // without PASEO_PASSWORD).
+    // The daemon's own close action (MCP kill_agent): the record stays valid and the next message
+    // resumes the session.
     const outcome = await releaseAgents([agentId]);
     if (outcome.released.includes(agentId)) {
       return "released";
@@ -243,12 +257,42 @@ async function fetchAgent(client: DaemonSessionClient, agentId: string): Promise
   return agents.find((agent) => agent.id === agentId) ?? null;
 }
 
-async function removeEmptyWorkspaces(): Promise<Array<{ workspaceId: string; name: string | null }>> {
+/**
+ * The once-a-day destructive phase. It runs after the tick has been recorded, so a slow or failing
+ * cleanup can never change what the sweep reported, and it is skipped entirely when the listing
+ * failed: without it "no session records" would be true for every workspace.
+ */
+async function cleanupWorkspaces(state: AutoReleaseSnapshot, outcome: ReleaseOutcome): Promise<void> {
+  if (cleaning || outcome.agents === null || !cleanupDue(state)) {
+    return;
+  }
+  cleaning = true;
+  try {
+    const removed = await removeEmptyWorkspaces(outcome.agents);
+    const finished = {
+      ...state,
+      lastRemovedWorkspaces: removed,
+      lastCleanupAt: new Date().toISOString(),
+    };
+    await writeState(finished);
+    status = statusFrom(finished, running);
+  } catch (cleanupError) {
+    console.log(`agent-manager could not clean up workspaces: ${describe(cleanupError)}`);
+  } finally {
+    cleaning = false;
+  }
+}
+
+function cleanupDue(state: AutoReleaseSnapshot): boolean {
+  const previous = Date.parse(state.lastCleanupAt ?? "");
+  return !Number.isFinite(previous) || Date.now() - previous >= cleanupIntervalMs();
+}
+
+async function removeEmptyWorkspaces(agents: readonly AgentRecord[]): Promise<Array<{ workspaceId: string; name: string | null }>> {
   const removed: Array<{ workspaceId: string; name: string | null }> = [];
   try {
     const rows = await listWorkspaceRows();
     const client = await getDaemonClient();
-    const agents = await listAllAgents((options) => client.fetchAgents(options as never));
     const busy = new Set(agents.map((agent) => agent.workspaceId).filter((id): id is string => id !== null));
     const paseo: PaseoLike = {
       agents: { list: (options) => client.fetchAgents(options as never) },
@@ -268,21 +312,28 @@ async function removeEmptyWorkspaces(): Promise<Array<{ workspaceId: string; nam
   return removed;
 }
 
-async function recordRun(
-  state: AutoReleaseSnapshot,
-  released: Array<{ agentId: string; title: string | null }>,
-  removedWorkspaces: Array<{ workspaceId: string; name: string | null }>,
-  skipped: number,
-  error: string | null,
-): Promise<AutoReleaseSnapshot> {
-  const finishedAt = new Date().toISOString();
+/** Paseo archives a worktree when its change request merges, but only for the ones it created. */
+async function archiveMergedWorktreesOnce(): Promise<void> {
+  if (archiving) {
+    return;
+  }
+  archiving = true;
+  try {
+    await archiveMergedWorktrees();
+  } catch (archiveError) {
+    console.log(`agent-manager could not archive merged worktrees: ${describe(archiveError)}`);
+  } finally {
+    archiving = false;
+  }
+}
+
+async function recordRun(state: AutoReleaseSnapshot, outcome: ReleaseOutcome): Promise<AutoReleaseSnapshot> {
   const finished = withDerived({
     ...state,
-    lastRunAt: finishedAt,
-    lastReleased: released,
-    lastRemovedWorkspaces: removedWorkspaces,
-    lastSkipped: skipped,
-    lastError: error,
+    lastRunAt: new Date().toISOString(),
+    lastReleased: outcome.released,
+    lastSkipped: outcome.skipped,
+    lastError: outcome.error,
   });
   await writeState(finished);
   return finished;
@@ -292,59 +343,6 @@ function withDerived(state: AutoReleaseSnapshot): AutoReleaseSnapshot {
   const parsed = Date.parse(state.lastRunAt ?? "");
   const anchor = Number.isFinite(parsed) ? parsed : Date.now();
   return { ...state, nextRunAt: new Date(anchor + sweepIntervalMs()).toISOString() };
-}
-
-async function resolveLastActivityAt(agent: AgentRecord): Promise<number | null> {
-  const recordPath = await findRecordPath(agent.cwd, agent.id);
-  return readLastActivity(recordPath, agent.updatedAt);
-}
-
-async function readLastActivity(recordPath: string | null, fallback: string | null): Promise<number | null> {
-  if (recordPath) {
-    try {
-      const parsed = JSON.parse(await readFile(recordPath, "utf8")) as { lastActivityAt?: unknown };
-      const parsedMs = Date.parse(str(parsed.lastActivityAt) ?? "");
-      if (Number.isFinite(parsedMs)) {
-        return parsedMs;
-      }
-    } catch {
-      // Not evidence of idleness: fall through to the daemon's stamp, which a one-minute window
-      // would otherwise act on at once.
-    }
-  }
-  const updatedMs = Date.parse(fallback ?? "");
-  return Number.isFinite(updatedMs) ? updatedMs : null;
-}
-
-async function findRecordPath(cwd: string | null, agentId: string): Promise<string | null> {
-  if (cwd) {
-    const slug = cwd.replace(/^\/+/, "").replace(/\/+/g, "-");
-    const candidate = join(paseoHome(), "agents", slug, `${agentId}.json`);
-    if (await exists(candidate)) {
-      return candidate;
-    }
-  }
-  const root = join(paseoHome(), "agents");
-  try {
-    for (const entry of await readdir(root)) {
-      const candidate = join(root, entry, `${agentId}.json`);
-      if (await exists(candidate)) {
-        return candidate;
-      }
-    }
-  } catch {
-    return null;
-  }
-  return null;
-}
-
-async function exists(path: string): Promise<boolean> {
-  try {
-    await readFile(path, "utf8");
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 async function readStoredState(): Promise<Partial<AutoReleaseSnapshot>> {
@@ -363,4 +361,3 @@ function writeState(state: AutoReleaseSnapshot): Promise<void> {
   ) as AutoReleaseSnapshot;
   return serializeWrite(() => writeJsonAtomic(join(paseoHome(), STATE_PATH), payload));
 }
-

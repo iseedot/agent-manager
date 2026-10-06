@@ -1,5 +1,4 @@
 import { getDaemonClient } from "./daemon-client";
-import { fireAndForget } from "./guard";
 import { noticeName, recordNotice } from "./notices";
 import { isManagedWorktreePath } from "./project-worktrees";
 import { listWorkspaceRows } from "./workspaces";
@@ -7,9 +6,8 @@ import { listWorkspaceRows } from "./workspaces";
 /**
  * Paseo archives a workspace when its change request is merged, but only for the worktrees it created
  * itself (it checks the worktree root). Project-local worktrees are ours, so the same rule is applied
- * here, on the auto-release cadence: merged pull request, nothing uncommitted, nothing unpushed.
+ * here — merged pull request, nothing uncommitted, nothing unpushed — on the auto-release tick.
  */
-const INTERVAL_MS = 15 * 60 * 1000;
 
 interface CheckoutStatusLike {
   git?: { isDirty?: unknown; aheadOfOrigin?: unknown } | null;
@@ -19,13 +17,6 @@ interface CheckoutStatusLike {
 interface ArchiveClient {
   getCheckoutStatus(cwd: string): Promise<CheckoutStatusLike | null>;
   archiveWorkspace(workspaceId: string): Promise<unknown>;
-}
-
-export function startMergedWorktreeArchiver(): () => void {
-  const timer = setInterval(() => {
-    fireAndForget(archiveMergedWorktrees(), "merged worktree archive");
-  }, INTERVAL_MS);
-  return () => clearInterval(timer);
 }
 
 export async function archiveMergedWorktrees(
