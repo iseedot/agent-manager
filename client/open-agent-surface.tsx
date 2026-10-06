@@ -2,7 +2,6 @@ import type { PluginSurfaceProps } from "@getpaseo/plugin/client";
 import { useEffect, useState } from "react";
 import { ActivityIndicator, Linking, Text, View } from "react-native";
 
-import { message } from "./format";
 import {
   consumeAgentFocus,
   consumeNewAgentRequest,
@@ -79,7 +78,7 @@ export function OpenAgentSurface({ navigation, host, theme }: PluginSurfaceProps
         }
       } catch (createError) {
         if (!cancelled) {
-          setError(message(createError));
+          setError(createError instanceof Error ? createError.message : String(createError));
         }
       }
     })();

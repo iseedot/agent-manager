@@ -19,6 +19,8 @@ export const autoReleaseSettings = defineSettings({
     purgeArchivedWorkspaces: z.boolean().default(false),
     /** Off: only meaningful while purging, and pi only. Deletes the provider's own transcript. */
     deleteProviderSessions: z.boolean().default(false),
+    /** Off: deletes provider sessions that no Paseo agent record references (pi only today). */
+    deleteOrphanProviderSessions: z.boolean().default(false),
   }),
 });
 

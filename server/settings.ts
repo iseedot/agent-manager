@@ -9,6 +9,7 @@ export interface AutoReleaseConfig {
   cleanupIntervalMs: number;
   purgeArchivedWorkspaces: boolean;
   deleteProviderSessions: boolean;
+  deleteOrphanProviderSessions: boolean;
 }
 
 const MIN_SWEEP_INTERVAL_MS = 5000;
@@ -83,6 +84,10 @@ export function autoReleaseConfig(): AutoReleaseConfig {
     deleteProviderSessions: envFlag(
       "PASEO_AGENT_MANAGER_DELETE_PROVIDER_SESSIONS",
       stored.deleteProviderSessions,
+    ),
+    deleteOrphanProviderSessions: envFlag(
+      "PASEO_AGENT_MANAGER_DELETE_ORPHAN_SESSIONS",
+      stored.deleteOrphanProviderSessions,
     ),
   };
 }

@@ -24,7 +24,7 @@ const NUMBER_FIELDS: Array<{
   {
     key: "sweepIntervalMinutes",
     label: "Tick every (minutes)",
-    hint: "One tick releases runtimes, runs the cleanup and archives merged worktrees.",
+    hint: "One tick releases runtimes and runs the cleanup.",
   },
   {
     key: "graceMinutes",
@@ -79,13 +79,17 @@ function Numbers({ settings, theme }: { settings: Ready; theme: PluginSurfacePro
 function Controls({ settings, theme }: { settings: Ready; theme: PluginSurfaceProps["theme"] }) {
   const style = useMemo(() => ({ color: theme.colors.foregroundMuted }), [theme]);
   const toggle = useCallback(
-    (key: "purgeArchivedWorkspaces" | "deleteProviderSessions", value: boolean) => {
+    (
+      key: "purgeArchivedWorkspaces" | "deleteProviderSessions" | "deleteOrphanProviderSessions",
+      value: boolean,
+    ) => {
       void settings.save({ ...settings.values, [key]: value }, settings.revision);
     },
     [settings],
   );
   const purge = settings.values.purgeArchivedWorkspaces;
   const sessions = settings.values.deleteProviderSessions;
+  const orphans = settings.values.deleteOrphanProviderSessions;
   return (
     <SettingsSection title="Auto-release">
       <SettingsCard>
@@ -103,12 +107,24 @@ function Controls({ settings, theme }: { settings: Ready; theme: PluginSurfacePr
           disabled={settings.saving || !purge}
           onValueChange={(value) => toggle("deleteProviderSessions", value)}
         />
+        <SettingsSwitch
+          label="Delete sessions Paseo does not know"
+          hint="Removes provider transcripts with no Paseo agent record, i.e. sessions created by running the provider directly. Only pi is supported today; irreversible."
+          value={orphans}
+          disabled={settings.saving}
+          onValueChange={(value) => toggle("deleteOrphanProviderSessions", value)}
+        />
       </SettingsCard>
       <Text style={style}>
         {purge
           ? "Archived workspaces will be deleted for good at the next cleanup; they cannot be restored."
           : "Archived workspaces are kept unless they have no sessions left."}
       </Text>
+      {orphans ? (
+        <Text style={style}>
+          Provider sessions with no Paseo record will be deleted at the next cleanup.
+        </Text>
+      ) : null}
       <Numbers key={settings.revision} settings={settings} theme={theme} />
     </SettingsSection>
   );

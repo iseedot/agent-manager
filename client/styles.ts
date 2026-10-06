@@ -167,7 +167,6 @@ export function buildStyles(
     disabled: { opacity: 0.45 },
     pillPanel: { gap: 6 },
 
-    pillHost: { color: palette.foregroundMuted, fontSize: 10, lineHeight: 14 },
     pillHead: {
       flexDirection: "row" as const,
       alignItems: "baseline" as const,
@@ -227,8 +226,6 @@ export function buildStyles(
     pillTabTitleCurrent: { fontWeight: "600" as const },
     pillTabMeta: { color: palette.foregroundMuted, fontSize: 10, flexShrink: 0 },
     pillButton: { flexBasis: "48%" as const, flexGrow: 1 },
-    pillNote: { gap: 2, borderTopWidth: 1, borderTopColor: palette.border, paddingTop: 6 },
-    noticeBlock: { gap: 2 },
     buildStamp: { color: palette.foregroundMuted, fontSize: 9, opacity: 0.8 },
   };
   return { styles, tones };

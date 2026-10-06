@@ -34,36 +34,12 @@ export interface DaemonSessionClient {
   refreshAgent(agentId: string, requestId?: string): Promise<unknown>;
   closeItems(input: { agentIds: string[]; terminalIds: string[] }): Promise<unknown>;
   getDaemonStatus(options?: unknown): Promise<{ serverId?: unknown }>;
-  addProject(cwd: string, requestId?: string): Promise<{ project?: { projectId?: unknown } | null; error?: unknown }>;
-  archiveWorkspace(workspaceId: string, requestId?: string): Promise<unknown>;
-  getCheckoutStatus(
-    cwd: string,
-    options?: { requestId?: string },
-  ): Promise<{
-    git?: { isDirty?: unknown; aheadOfOrigin?: unknown } | null;
-    forge?: { pullRequest?: { isMerged?: unknown; url?: unknown } | null } | null;
-  } | null>;
   listTerminals(
     cwd?: string,
     requestId?: string,
     options?: { workspaceId?: string },
   ): Promise<{ terminals?: Array<Record<string, unknown>> }>;
   killTerminal(terminalId: string, requestId?: string): Promise<unknown>;
-}
-
-/**
- * Registers a project for a directory and returns its id. Used when a workspace request carries no
- * projectId, so the workspace is not filed under a project built from the worktree path.
- */
-export async function registerProject(cwd: string): Promise<string | null> {
-  try {
-    const client = await getDaemonClient();
-    const payload = await client.addProject(cwd);
-    const projectId = payload?.project?.projectId;
-    return typeof projectId === "string" && projectId.length > 0 ? projectId : null;
-  } catch {
-    return null;
-  }
 }
 
 let cachedServerId: string | null = null;

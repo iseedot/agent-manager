@@ -1,16 +1,11 @@
 import type { PluginButtonContentProps, PluginClientContext } from "@getpaseo/plugin/client";
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { ActivityIndicator, Platform, Pressable, Text, View } from "react-native";
+import { useMemo, useState } from "react";
+import { ActivityIndicator, Pressable, Text, View } from "react-native";
 
 import { useAgentDirectory, type DirectoryAgent } from "./agent-directory";
-import { hostLine, message, sweepLine, tabLine } from "./format";
-import { dismissGitNotice, runGitNoticeAction, sortNotices, useGitNotices } from "./git-notices";
-import { useHostFacts } from "./host-facts";
 import { buildStyles, type StyleMap } from "./styles";
 
 type Client = PluginClientContext;
-
-const MAX_VISIBLE_NOTICES = 2;
 
 /**
  * A client only picks up plugin code when it refetches the catalog, so a phone can keep running an
@@ -19,7 +14,7 @@ const MAX_VISIBLE_NOTICES = 2;
  */
 const UI_STAMP: string = (() => {
   let hash = 0;
-  const sources = [WorkspacePillPanel, tabState, tabTitle, buildStyles, tabLine].map((value) => {
+  const sources = [WorkspacePillPanel, tabState, tabTitle, buildStyles].map((value) => {
     try {
       return String(value);
     } catch {
@@ -78,13 +73,8 @@ export function WorkspacePillPanel(props: WorkspacePillPanelProps) {
   const agentId = props.context === "agent" ? props.agentId : null;
   const { styles, tones } = useMemo(() => buildStyles(theme, layout.compact), [theme, layout.compact]);
   const agents = useAgentDirectory();
-  const notices = useGitNotices();
-  const facts = useHostFacts();
-  // Keep this in step with pillTitle(): the body only drops the line the heading really shows.
-  const tabLineIsInHeading = layout.compact && Platform.OS !== "web";
   const [note, setNote] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [busyNotice, setBusyNotice] = useState<number | null>(null);
 
   const workspaceAgents = useMemo(
     () => agents.filter((row) => row.workspaceId === workspaceId && row.archivedAt === null),
@@ -97,11 +87,6 @@ export function WorkspacePillPanel(props: WorkspacePillPanelProps) {
         .sort((left, right) => (right.updatedAt ?? "").localeCompare(left.updatedAt ?? "")),
     [workspaceAgents],
   );
-  const current = useMemo(() => agents.find((row) => row.id === agentId) ?? null, [agents, agentId]);
-  const terminal = useMemo(
-    () => facts?.terminals.find((row) => row.workspaceId === workspaceId) ?? null,
-    [facts, workspaceId],
-  );
 
   const archiveTab = async (agentIdToClose: string) => {
     if (busy) {
@@ -113,7 +98,7 @@ export function WorkspacePillPanel(props: WorkspacePillPanelProps) {
       await client.paseo.agents.ref(agentIdToClose).archive();
       setNote("Tab closed.");
     } catch (archiveError) {
-      setNote(message(archiveError));
+      setNote(archiveError instanceof Error ? archiveError.message : String(archiveError));
     } finally {
       setBusy(false);
     }
@@ -121,87 +106,6 @@ export function WorkspacePillPanel(props: WorkspacePillPanelProps) {
 
   return (
     <View style={styles.pillPanel}>
-      <Text style={styles.pillHost} numberOfLines={2}>
-        {facts ? hostLine(facts, terminal) : "reading host…"}
-      </Text>
-      <Text style={styles.hint} numberOfLines={1}>
-        {facts ? sweepLine(facts.autoRelease) : "reading auto-release…"}
-      </Text>
-      {current && !tabLineIsInHeading ? (
-        <Text style={styles.hint} numberOfLines={1}>
-          <Text style={styles.pillLabel}>Tab </Text>
-          {tabLine(current)}
-        </Text>
-      ) : null}
-
-      {notices.length > 0 ? (
-        <View style={styles.pillNote}>
-          <Text style={styles.pillLabel}>NOTICES</Text>
-          {sortNotices(notices)
-            .slice(0, MAX_VISIBLE_NOTICES)
-            .map((notice) => (
-              <View key={notice.id} style={styles.noticeBlock}>
-                <View style={styles.pillTabRow}>
-                  <Text style={styles.hint} numberOfLines={1}>
-                    {notice.title}
-                  </Text>
-                  <Pressable
-                    accessibilityRole="button"
-                    accessibilityLabel="Dismiss notice"
-                    hitSlop={8}
-                    onPress={() => dismissGitNotice(notice.id)}
-                    style={styles.pillTabClose}
-                  >
-                    <Text style={styles.pillTabCloseText}>×</Text>
-                  </Pressable>
-                </View>
-                {notice.actions && notice.actions.length > 0 ? (
-                  <View style={styles.actionsGrid}>
-                    {notice.actions.map((action) => (
-                      <Pressable
-                        key={action.id}
-                        accessibilityRole="button"
-                        disabled={busyNotice !== null}
-                        onPress={() => {
-                          setBusyNotice(notice.id);
-                          setNote(null);
-                          void runGitNoticeAction(notice.id, action.id)
-                            .then((failure) => {
-                              if (failure) setNote(failure);
-                            })
-                            .finally(() => setBusyNotice(null));
-                        }}
-                        style={({ hovered, pressed }: { hovered?: boolean; pressed?: boolean }) => [
-                          styles.button,
-                          styles.buttonSmall,
-                          action.tone === "danger" ? styles.buttonDanger : null,
-                          action.tone === "primary" ? styles.buttonPrimary : null,
-                          hovered || pressed ? styles.buttonHover : null,
-                          busyNotice !== null ? styles.disabled : null,
-                        ]}
-                      >
-                        <Text
-                          style={
-                            action.tone === "danger" || action.tone === "primary"
-                              ? styles.buttonTextOn
-                              : styles.buttonText
-                          }
-                        >
-                          {action.label}
-                        </Text>
-                      </Pressable>
-                    ))}
-                  </View>
-                ) : null}
-              </View>
-            ))}
-
-          {notices.length > MAX_VISIBLE_NOTICES ? (
-            <Text style={styles.hint}>{notices.length - MAX_VISIBLE_NOTICES} more</Text>
-          ) : null}
-        </View>
-      ) : null}
-
       <View style={styles.pillHead}>
         <Text style={styles.pillLabel}>TABS</Text>
         <Text style={styles.pillCount} numberOfLines={1}>
@@ -298,4 +202,3 @@ function tabMeta(tone: TabStateTone, styles: StyleMap): StyleMap[string] {
   if (tone === "failed") return styles.factDanger;
   return undefined;
 }
-

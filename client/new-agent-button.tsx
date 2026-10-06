@@ -1,32 +1,14 @@
 import type { PluginButtonContentProps, PluginClientContext } from "@getpaseo/plugin/client";
-import { Linking, Platform } from "react-native";
+import { Linking } from "react-native";
 
 import { workspacesRpc } from "../shared/contracts";
 import { agentDirectoryStore, type DirectoryAgent } from "./agent-directory";
 import { WorkspacePillPanel } from "./composer-panel";
-import { message, tabLine } from "./format";
-import {
-  gitNoticeWarning,
-  gitNoticesSnapshot,
-  subscribeGitNotices,
-} from "./git-notices";
 
 const PILL_ID = "agent-workspace-pill";
 const FOCUS_SURFACE_ID = "open-agent";
-/**
- * The host requires a non-empty button title and renders it as the sheet heading on a phone (wide
- * layouts only show it as a tooltip). Native platforms therefore get this tab's timestamps up there —
- * the heading exists anyway, so it may as well carry something — and wide layouts get a zero-width
- * space so no label is drawn. The popover body skips the same line when the heading shows it.
- */
-const PILL_TITLE = "\u200B";
-
-function pillTitle(row: DirectoryAgent): string {
-  if (Platform.OS === "web") {
-    return PILL_TITLE;
-  }
-  return `Tab ${tabLine(row)}`;
-}
+/** The pill's fixed heading. The label carries the count, so this never changes. */
+const PILL_TITLE = "Tabs";
 const LABEL_FALLBACK = "Tabs";
 const PILL_ICON = "Layers";
 const ERROR_TITLE_MS = 8000;
@@ -148,9 +130,10 @@ export function contributeComposerPills(client: PluginClientContext): () => void
   };
 
   const fail = (what: string, error: unknown): void => {
-    console.log(`agent-manager could not ${what}: ${message(error)}`);
+    const detail = error instanceof Error ? error.message : String(error);
+    console.log(`agent-manager could not ${what}: ${detail}`);
     if (what === "create the session") {
-      flash(`New agent — failed: ${message(error)}`);
+      flash(`New agent — failed: ${detail}`);
     }
   };
 
@@ -191,18 +174,15 @@ export function contributeComposerPills(client: PluginClientContext): () => void
       return;
     }
     const tabs = resolved.tabsByWorkspace.get(agent.workspaceId) ?? [];
-    const running = tabs.filter((row) => row.status === "running").length;
-    const gitWarning = gitNoticeWarning(gitNoticesSnapshot());
-    const title = pillTitle(agent);
-    const signature = `${tabs.length}|${running}|${gitWarning ?? ""}|${title}`;
+    const title = PILL_TITLE;
+    const signature = `${tabs.length}|${title}`;
     if (signatures.get(agentId) === signature) {
       return;
     }
     signatures.set(agentId, signature);
     const count = tabs.length;
     const tabsWord = `${count} tab${count === 1 ? "" : "s"}`;
-    const label = `${count === 0 ? LABEL_FALLBACK : tabsWord}${gitWarning ? " ⚠" : ""}`;
-    void running;
+    const label = count === 0 ? LABEL_FALLBACK : tabsWord;
     try {
       registration.update({ label, title });
     } catch (error) {
@@ -255,8 +235,7 @@ export function contributeComposerPills(client: PluginClientContext): () => void
     }
   };
 
-  const unsubscribe = agentDirectoryStore.subscribe(sync);
-  const unsubscribeNotices = subscribeGitNotices(sync);
+  const unsubscribeAgents = agentDirectoryStore.subscribe(sync);
   sync();
 
   const createAgent = async (workspaceId: string): Promise<string | null> => {
@@ -300,8 +279,7 @@ export function contributeComposerPills(client: PluginClientContext): () => void
 
   return () => {
     released = true;
-    unsubscribeNotices();
-    unsubscribe();
+    unsubscribeAgents();
     for (const agentId of [...pills.keys()]) {
       drop(agentId);
     }

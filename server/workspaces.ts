@@ -135,8 +135,16 @@ export async function deleteWorkspace(
   };
 }
 
+/** One workspace the cleanup actually removed, with what went with it (for the tick's log). */
+export interface RemovedWorkspace {
+  workspaceId: string;
+  name: string | null;
+  agents: number;
+  deletedSessions: number;
+}
+
 export interface PurgeOutcome {
-  removed: Array<{ workspaceId: string; name: string | null }>;
+  removed: RemovedWorkspace[];
   deletedSessions: number;
   sessionFailures: number;
 }
@@ -173,14 +181,21 @@ export async function purgeArchivedWorkspaces(
       continue;
     }
     const agents = byWorkspace.get(row.workspaceId) ?? [];
+    let workspaceSessions = 0;
     if (options.deleteProviderSessions && agents.length > 0) {
       const sessions = await deleteAgentSessionFiles(agents).catch(() => null);
-      deletedSessions += sessions?.deleted.length ?? 0;
+      workspaceSessions = sessions?.deleted.length ?? 0;
+      deletedSessions += workspaceSessions;
       sessionFailures += sessions?.failed.length ?? 0;
     }
     const result = await deleteWorkspace(paseo, row.workspaceId).catch(() => null);
     if (result?.ok) {
-      removed.push({ workspaceId: row.workspaceId, name: row.name });
+      removed.push({
+        workspaceId: row.workspaceId,
+        name: row.name,
+        agents: agents.length,
+        deletedSessions: workspaceSessions,
+      });
     }
   }
   return { removed, deletedSessions, sessionFailures };
