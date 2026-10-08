@@ -390,6 +390,29 @@ export async function runCleanupNow(): Promise<CleanupResult> {
   }
 }
 
+export interface OrphanSweepResult {
+  deleted: number;
+  failed: number;
+}
+
+/**
+ * The settings screen's orphan-sweep button: run the "sessions Paseo does not know" pass immediately
+ * instead of waiting for the next tick, regardless of the switch. It reads the agent records from
+ * disk, so it does not need the daemon listing and does not depend on the release switch either.
+ */
+export async function runOrphanSweepNow(): Promise<OrphanSweepResult> {
+  if (running || cleaning) {
+    throw new Error("A sweep or cleanup is already running. Try again in a moment.");
+  }
+  cleaning = true;
+  try {
+    const orphans = await deleteOrphanProviderSessions();
+    return { deleted: orphans.deleted.length, failed: orphans.failed.length };
+  } finally {
+    cleaning = false;
+  }
+}
+
 /**
  * Due when the interval has passed — or when any switch changed since the last cleanup, so turning
  * the purge, the session-file switch or the orphan sweep on does not wait out a day.

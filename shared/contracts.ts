@@ -30,3 +30,13 @@ export const runCleanupRpc = defineRpc({
     deletedOrphanSessions: z.number(),
   }),
 });
+
+/**
+ * The settings screen's orphan-sweep button: run the "sessions Paseo does not know" pass immediately
+ * instead of waiting for the next tick.
+ */
+export const runOrphanSweepRpc = defineRpc({
+  name: "agent-manager.run-orphan-sweep",
+  input: z.object({}),
+  output: z.object({ deleted: z.number(), failed: z.number() }),
+});

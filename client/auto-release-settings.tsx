@@ -11,7 +11,7 @@ import {
   SettingsSwitch,
 } from "@getpaseo/plugin/client/ui";
 
-import { runCleanupRpc } from "../shared/contracts";
+import { runCleanupRpc, runOrphanSweepRpc } from "../shared/contracts";
 import { autoReleaseSettings } from "../shared/settings";
 
 type Ready = Extract<SettingsState<typeof autoReleaseSettings.schema>, { status: "ready" }>;
@@ -77,8 +77,20 @@ function Numbers({ settings, theme }: { settings: Ready; theme: PluginSurfacePro
   );
 }
 
-function PurgeNow({ theme }: { theme: PluginSurfaceProps["theme"] }) {
-  const runCleanup = useRpc(runCleanupRpc);
+/** One destructive action with its own busy/result state. `task` returns the line to show. */
+function RunNowAction({
+  theme,
+  label,
+  hint,
+  actionLabel,
+  task,
+}: {
+  theme: PluginSurfaceProps["theme"];
+  label: string;
+  hint: string;
+  actionLabel: string;
+  task: () => Promise<string>;
+}) {
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -91,43 +103,78 @@ function PurgeNow({ theme }: { theme: PluginSurfaceProps["theme"] }) {
     setNote(null);
     setError(null);
     try {
-      const result = await runCleanup({});
-      const workspaces = result.removed.length;
-      const agents =
-        result.deletedAgents + result.removed.reduce((total, item) => total + item.agents, 0);
-      const sessions = result.deletedSessions;
-      if (workspaces === 0 && agents === 0) {
-        setNote("No archived workspace or agent to delete.");
-      } else {
-        const parts: string[] = [];
-        if (workspaces > 0) {
-          parts.push(`${workspaces} archived workspace${workspaces === 1 ? "" : "s"}`);
-        }
-        if (agents > 0) {
-          parts.push(`${agents} archived agent${agents === 1 ? "" : "s"}`);
-        }
-        const detail =
-          sessions > 0 ? ` and ${sessions} pi session file${sessions === 1 ? "" : "s"}` : "";
-        setNote(`Deleted ${parts.join(" and ")}${detail}.`);
-      }
+      setNote(await task());
     } catch (runError) {
       setError(runError instanceof Error ? runError.message : String(runError));
     } finally {
       setBusy(false);
     }
-  }, [busy, runCleanup]);
+  }, [busy, task]);
   return (
     <>
       <SettingsAction
-        label="Delete every archived workspace and agent now"
-        hint="Runs the purge immediately: every archived workspace and every archived agent, even one inside a workspace that is not archived, with its pi session file. Irreversible; ignores the cleanup interval."
-        actionLabel={busy ? "Deleting…" : "Delete now"}
+        label={label}
+        hint={hint}
+        actionLabel={busy ? `${actionLabel}…` : actionLabel}
         disabled={busy}
         error={error}
         onPress={() => void run()}
       />
       {note ? <Text style={style}>{note}</Text> : null}
     </>
+  );
+}
+
+function DeleteArchivedNow({ theme }: { theme: PluginSurfaceProps["theme"] }) {
+  const runCleanup = useRpc(runCleanupRpc);
+  const task = useCallback(async () => {
+    const result = await runCleanup({});
+    const workspaces = result.removed.length;
+    const agents =
+      result.deletedAgents + result.removed.reduce((total, item) => total + item.agents, 0);
+    const sessions = result.deletedSessions;
+    if (workspaces === 0 && agents === 0) {
+      return "No archived workspace or agent to delete.";
+    }
+    const parts: string[] = [];
+    if (workspaces > 0) {
+      parts.push(`${workspaces} archived workspace${workspaces === 1 ? "" : "s"}`);
+    }
+    if (agents > 0) {
+      parts.push(`${agents} archived agent${agents === 1 ? "" : "s"}`);
+    }
+    const detail = sessions > 0 ? ` and ${sessions} pi session file${sessions === 1 ? "" : "s"}` : "";
+    return `Deleted ${parts.join(" and ")}${detail}.`;
+  }, [runCleanup]);
+  return (
+    <RunNowAction
+      theme={theme}
+      label="Delete every archived workspace and agent now"
+      hint="Runs the purge immediately: every archived workspace and every archived agent, even one inside a workspace that is not archived, with its pi session file. Irreversible; ignores the cleanup interval."
+      actionLabel="Delete now"
+      task={task}
+    />
+  );
+}
+
+function SweepOrphansNow({ theme }: { theme: PluginSurfaceProps["theme"] }) {
+  const sweep = useRpc(runOrphanSweepRpc);
+  const task = useCallback(async () => {
+    const result = await sweep({});
+    if (result.deleted === 0 && result.failed === 0) {
+      return "No unmanaged session to delete.";
+    }
+    const failed = result.failed > 0 ? ` (${result.failed} failed)` : "";
+    return `Deleted ${result.deleted} unmanaged session${result.deleted === 1 ? "" : "s"}${failed}.`;
+  }, [sweep]);
+  return (
+    <RunNowAction
+      theme={theme}
+      label="Delete sessions Paseo does not know now"
+      hint="Runs the orphan sweep immediately: every provider transcript with no Paseo agent record. Only pi is supported today; irreversible."
+      actionLabel="Delete now"
+      task={task}
+    />
   );
 }
 
@@ -183,7 +230,8 @@ function Controls({ settings, theme }: { settings: Ready; theme: PluginSurfacePr
         />
       </SettingsCard>
       <SettingsCard>
-        <PurgeNow theme={theme} />
+        <DeleteArchivedNow theme={theme} />
+        <SweepOrphansNow theme={theme} />
       </SettingsCard>
       <Text style={style}>
         {purge

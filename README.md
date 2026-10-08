@@ -108,7 +108,7 @@ codex) — guessed paths would risk deleting a file that was never ours, so thos
 that runs in the same cleanup pass as the two above, without conflicting with them: after the
 workspace pass it enumerates each supported provider's own session store and deletes every transcript
 that **no Paseo agent record references** — sessions created by running the provider directly, outside
-Paseo.
+Paseo. The **Delete sessions Paseo does not know now** button runs that sweep on the spot.
 
 For **pi** the store is `<agent-dir>/sessions/<cwd-slug>/<timestamp>_<uuid>.jsonl` (agent dir
 `~/.pi/agent` unless `PI_CODING_AGENT_DIR` moves it; `PI_CODING_AGENT_SESSION_DIR`, the
@@ -153,6 +153,7 @@ screen can change all of it; every value has a default and nothing has to be con
 | Delete pi session files | off | also delete the pi transcript while purging |
 | Delete sessions Paseo does not know | off | delete provider transcripts with no Paseo agent record (pi only today) |
 | Delete every archived workspace and agent now | — | button: run the purge immediately (every archived workspace and every archived agent, even one inside a workspace that is not archived, plus its pi session file), without waiting for the cleanup interval |
+| Delete sessions Paseo does not know now | — | button: run the orphan sweep immediately (every provider transcript with no Paseo agent record), without waiting for the cleanup interval |
 
 Values live in `~/.paseo/plugin-settings/agent-manager/auto-release.json` (`{ version, values }`, with the
 zod schema as the contract). An operator can override any of them from the daemon environment, and the
