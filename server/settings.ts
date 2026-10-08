@@ -4,6 +4,7 @@ import { autoReleaseSettings, type AutoReleaseSettings } from "../shared/setting
 
 /** What the tick needs, after settings and environment have both had their say. */
 export interface AutoReleaseConfig {
+  enabled: boolean;
   sweepIntervalMs: number;
   graceMs: number;
   cleanupIntervalMs: number;
@@ -65,6 +66,7 @@ function envFlag(name: string, fallback: boolean): boolean {
 
 export function autoReleaseConfig(): AutoReleaseConfig {
   return {
+    enabled: envFlag("PASEO_AGENT_MANAGER_ENABLED", stored.enabled),
     sweepIntervalMs: envNumber(
       "PASEO_AGENT_MANAGER_SWEEP_INTERVAL_MS",
       stored.sweepIntervalMinutes * 60000,

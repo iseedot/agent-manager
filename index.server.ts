@@ -18,7 +18,11 @@ export default function contribute(server: PluginServerContext) {
   // 0.11 lifecycle hook: release a runtime right after its turn ends plus the grace window, rather
   // than waiting for the next tick. The timer stays as the safety net for already-idle runtimes.
   const removeTurnEnded = server.on("agent.turn_ended", (event) => {
-    scheduleReleaseAfterTurn(event.agent.id, autoReleaseConfig().graceMs);
+    const config = autoReleaseConfig();
+    if (!config.enabled) {
+      return;
+    }
+    scheduleReleaseAfterTurn(event.agent.id, config.graceMs);
   });
 
   return () => {

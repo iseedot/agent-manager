@@ -12,6 +12,8 @@ export const autoReleaseSettings = defineSettings({
   scope: "host",
   version: 1,
   schema: z.object({
+    /** On: idle runtimes are released. Off: they are left running; only the cleanup below still runs. */
+    enabled: z.boolean().default(true),
     sweepIntervalMinutes: z.number().int().min(1).default(15),
     graceMinutes: z.number().min(0).default(5),
     cleanupIntervalHours: z.number().min(1).default(24),

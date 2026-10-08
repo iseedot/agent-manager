@@ -80,19 +80,31 @@ function Controls({ settings, theme }: { settings: Ready; theme: PluginSurfacePr
   const style = useMemo(() => ({ color: theme.colors.foregroundMuted }), [theme]);
   const toggle = useCallback(
     (
-      key: "purgeArchivedWorkspaces" | "deleteProviderSessions" | "deleteOrphanProviderSessions",
+      key:
+        | "enabled"
+        | "purgeArchivedWorkspaces"
+        | "deleteProviderSessions"
+        | "deleteOrphanProviderSessions",
       value: boolean,
     ) => {
       void settings.save({ ...settings.values, [key]: value }, settings.revision);
     },
     [settings],
   );
+  const enabled = settings.values.enabled;
   const purge = settings.values.purgeArchivedWorkspaces;
   const sessions = settings.values.deleteProviderSessions;
   const orphans = settings.values.deleteOrphanProviderSessions;
   return (
     <SettingsSection title="Auto-release">
       <SettingsCard>
+        <SettingsSwitch
+          label="Auto-release"
+          hint="Off: idle runtimes are never released, neither on the tick nor when a turn ends. The cleanup switches below still apply."
+          value={enabled}
+          disabled={settings.saving}
+          onValueChange={(value) => toggle("enabled", value)}
+        />
         <SettingsSwitch
           label="Purge archived workspaces"
           hint="Deletes every archived workspace, sessions included, even when agents remain."

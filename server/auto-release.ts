@@ -195,6 +195,11 @@ async function releaseRuntimes(config: AutoReleaseConfig): Promise<ReleaseOutcom
   try {
     const client = await getDaemonClient();
     agents = await listAllAgents((options) => client.fetchAgents(options as never));
+    if (!config.enabled) {
+      // Auto-release is off: still list the sessions, because the cleanup phase reuses this
+      // snapshot, but never close a runtime.
+      return { released, skipped, error, agents };
+    }
     const now = Date.now();
     for (const agent of agents) {
       if (agent.archivedAt !== null || agent.status === "closed") {

@@ -1,6 +1,6 @@
 {
   "name": "paseo-plugin-agent-manager",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Paseo plugin: composer pill for workspace tabs, git bootstrap for new projects, and automatic release of idle agent runtimes (aggressive profile: 1 minute of idleness).",
   "license": "MIT",
   "keywords": [

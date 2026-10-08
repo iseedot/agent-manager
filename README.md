@@ -42,6 +42,10 @@ refetch and the tab counts and states stay current. Nothing is polled.
 
 ## Auto-release
 
+The whole release pass has a master switch in the plugin settings — **Auto-release**, on by default.
+Turn it off and no runtime is released, neither on the tick nor when a turn ends; the daily cleanup
+keeps running under its own switches.
+
 **One timer.** A tick every fifteen minutes does both jobs, and it keeps working while the app is
 closed:
 
@@ -133,6 +137,7 @@ screen can change all of it; every value has a default and nothing has to be con
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
+| Auto-release | on | release idle runtimes; off leaves every runtime running (the cleanup below still runs) |
 | Tick every (minutes) | `15` | the single timer's cadence |
 | Grace (minutes) | `5` | a runtime touched this recently waits for the next tick (`0` releases on the tick) |
 | Cleanup every (hours) | `24` | how often the destructive phase may run |
@@ -147,6 +152,7 @@ value that is not a positive number is ignored:
 
 | Environment variable | Overrides |
 | --- | --- |
+| `PASEO_AGENT_MANAGER_ENABLED` | `1`/`0` — turn auto-release off (or back on) without the app |
 | `PASEO_AGENT_MANAGER_SWEEP_INTERVAL_MS` | tick cadence in ms, minimum `5000` |
 | `PASEO_AGENT_MANAGER_GRACE_MINUTES` | grace in minutes |
 | `PASEO_AGENT_MANAGER_CLEANUP_INTERVAL_MS` | cleanup interval in ms, minimum `60000` |
