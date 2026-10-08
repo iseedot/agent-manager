@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { execCommand } from "@getpaseo/plugin/server";
 
 import { paseoHome } from "./daemon-mcp";
 
@@ -7,63 +7,40 @@ interface CliResult {
   output: string;
 }
 
-interface CliRun {
-  code: number | null;
-  output: string;
-  error: Error | null;
-}
-
 function resolveCliBinary(): string {
   const configured = process.env.PASEO_AGENT_MANAGER_CLI?.trim();
   return configured && configured.length > 0 ? configured : "paseo";
 }
 
+/**
+ * Hard delete goes through the `paseo` CLI. 0.11 ships `execCommand`, which handles Windows
+ * `paseo.cmd`/`.bat` launchers and argv quoting, so this no longer hand-rolls `spawn` and a
+ * stdout/stderr promise.
+ */
 export async function deleteAgentViaCli(agentId: string): Promise<CliResult> {
   const binary = resolveCliBinary();
-  const run = await runCli(["agent", "delete", agentId, "--home", paseoHome()]);
-  if (run.error) {
-    return {
-      ok: false,
-      output:
-        (run.error as NodeJS.ErrnoException).code === "ENOENT"
-          ? `Command not found: ${binary}. Hard delete needs the paseo CLI on the daemon host PATH.`
-          : run.error.message,
-    };
-  }
-  return { ok: run.code === 0, output: run.output };
-}
-
-function runCli(args: string[]): Promise<CliRun> {
-  const binary = resolveCliBinary();
   const home = paseoHome();
-
-  return new Promise<CliRun>((resolve) => {
-    let settled = false;
-    const finish = (value: CliRun) => {
-      if (!settled) {
-        settled = true;
-        resolve(value);
-      }
+  try {
+    const { stdout, stderr } = await execCommand(binary, ["agent", "delete", agentId, "--home", home], {
+      env: { ...process.env, PASEO_HOME: home },
+      timeout: 60_000,
+      maxBuffer: 4 * 1024 * 1024,
+    });
+    return { ok: true, output: `${stdout}${stderr}`.trim() };
+  } catch (error) {
+    const failure = error as {
+      code?: string;
+      stdout?: string;
+      stderr?: string;
+      message?: string;
     };
-
-    let child;
-    try {
-      child = spawn(binary, args, {
-        env: { ...process.env, PASEO_HOME: home },
-        stdio: ["ignore", "pipe", "pipe"],
-      });
-    } catch (error) {
-      finish({ code: null, output: "", error: error as Error });
-      return;
+    if (failure.code === "ENOENT") {
+      return {
+        ok: false,
+        output: `Command not found: ${binary}. Hard delete needs the paseo CLI on the daemon host PATH.`,
+      };
     }
-
-    let output = "";
-    const append = (chunk: unknown) => {
-      output += String(chunk);
-    };
-    child.stdout?.on("data", append);
-    child.stderr?.on("data", append);
-    child.on("error", (error) => finish({ code: null, output: output.trim(), error }));
-    child.on("close", (code) => finish({ code, output: output.trim(), error: null }));
-  });
+    const output = `${failure.stdout ?? ""}${failure.stderr ?? ""}`.trim() || failure.message || "";
+    return { ok: false, output: output || "Delete failed" };
+  }
 }

@@ -6,81 +6,19 @@ import { agentDirectoryStore, type DirectoryAgent } from "./agent-directory";
 import { WorkspacePillPanel } from "./composer-panel";
 
 const PILL_ID = "agent-workspace-pill";
-const FOCUS_SURFACE_ID = "open-agent";
+/** The screen that performs a tab switch or a new-agent creation. */
+export const OPEN_AGENT_SCREEN_ID = "open-agent";
 /** The pill's fixed heading. The label carries the count, so this never changes. */
 const PILL_TITLE = "Tabs";
 const LABEL_FALLBACK = "Tabs";
 const PILL_ICON = "Layers";
-const ERROR_TITLE_MS = 8000;
 
 type Paseo = PluginClientContext["paseo"];
 
-interface AgentConfig {
+export interface AgentConfig {
   provider: string;
   modeId?: string;
   thinkingOptionId?: string;
-}
-
-export interface NewAgentRequest {
-  workspaceId: string;
-  paseo: Paseo;
-}
-
-let pendingFocus: string | null = null;
-let pendingRequest: NewAgentRequest | null = null;
-const requestListeners = new Set<() => void>();
-
-function emitRequest(): void {
-  for (const listener of [...requestListeners]) {
-    try {
-      listener();
-    } catch {
-      continue;
-    }
-  }
-}
-
-function requestAgentFocus(agentId: string): void {
-  pendingFocus = agentId;
-  emitRequest();
-}
-
-export function consumeAgentFocus(): string | null {
-  const agentId = pendingFocus;
-  pendingFocus = null;
-  return agentId;
-}
-
-function requestNewAgent(workspaceId: string, paseo: Paseo): void {
-  pendingRequest = { workspaceId, paseo };
-  emitRequest();
-}
-
-export function consumeNewAgentRequest(): NewAgentRequest | null {
-  const request = pendingRequest;
-  pendingRequest = null;
-  return request;
-}
-
-export function subscribeComposerRequests(listener: () => void): () => void {
-  requestListeners.add(listener);
-  return () => {
-    requestListeners.delete(listener);
-  };
-}
-
-let mountedFocusSurfaces = 0;
-
-export function markFocusSurfaceMounted(): void {
-  mountedFocusSurfaces += 1;
-}
-
-export function unmarkFocusSurfaceMounted(): void {
-  mountedFocusSurfaces = Math.max(0, mountedFocusSurfaces - 1);
-}
-
-function isFocusSurfaceMounted(): boolean {
-  return mountedFocusSurfaces > 0;
 }
 
 interface AgentIndex {
@@ -108,33 +46,12 @@ function indexAgents(): AgentIndex {
 
 export function contributeComposerPills(client: PluginClientContext): () => void {
   const pills = new Map<string, ReturnType<PluginClientContext["addComposerPill"]>>();
-  const busy = new Set<string>();
   let released = false;
   const signatures = new Map<string, string>();
-
-  const flash = (title: string): void => {
-    for (const registration of pills.values()) {
-      try {
-        registration.update({ title });
-      } catch {
-        continue;
-      }
-    }
-    setTimeout(() => {
-      const index = indexAgents();
-      for (const agentId of [...pills.keys()]) {
-        signatures.delete(agentId);
-        applyStatus(agentId, index);
-      }
-    }, ERROR_TITLE_MS);
-  };
 
   const fail = (what: string, error: unknown): void => {
     const detail = error instanceof Error ? error.message : String(error);
     console.log(`agent-manager could not ${what}: ${detail}`);
-    if (what === "create the session") {
-      flash(`New agent — failed: ${detail}`);
-    }
   };
 
   const register = (agentId: string, workspaceId: string): void => {
@@ -190,13 +107,14 @@ export function contributeComposerPills(client: PluginClientContext): () => void
     }
   };
 
+  /**
+   * Switch tabs by opening a screen whose URL carries the agent id. The screen reads the id from
+   * its params and calls the client's own `navigation.openAgent`, so there is no cross-mount state
+   * and a second pick before the first navigation lands cannot be lost.
+   */
   const openTab = (agentId: string): void => {
-    requestAgentFocus(agentId);
-    if (isFocusSurfaceMounted()) {
-      return;
-    }
     try {
-      client.openSurface(FOCUS_SURFACE_ID);
+      client.openScreen({ screenId: OPEN_AGENT_SCREEN_ID, params: { agentId } });
     } catch (error) {
       fail("open the tab", error);
     }
@@ -238,25 +156,10 @@ export function contributeComposerPills(client: PluginClientContext): () => void
   const unsubscribeAgents = agentDirectoryStore.subscribe(sync);
   sync();
 
-  const createAgent = async (workspaceId: string): Promise<string | null> => {
-    if (released || busy.has(workspaceId)) {
-      return null;
-    }
-    busy.add(workspaceId);
-    try {
-      const config = await resolveNewAgentConfig(client.paseo, workspaceId);
-      const handle = (await client.paseo.workspaces.ref(workspaceId).agents.create({ config })) as
-        | { id?: unknown }
-        | null;
-      return text(handle?.id);
-    } catch (error) {
-      fail("create the session", error);
-      return null;
-    } finally {
-      busy.delete(workspaceId);
-    }
-  };
-
+  /**
+   * New agent: keep the two native fast paths (the app's own shortcut and its `paseo:` draft deep
+   * link) and otherwise hand off to the screen, which creates the session through the SDK.
+   */
   const press = async (workspaceId: string): Promise<void> => {
     if (released) {
       return;
@@ -264,16 +167,18 @@ export function contributeComposerPills(client: PluginClientContext): () => void
     if (triggerNewAgentShortcut() || (await openDraftDeepLink(client, workspaceId))) {
       return;
     }
-    requestNewAgent(workspaceId, client.paseo);
-    if (isFocusSurfaceMounted()) {
-      return;
-    }
     try {
-      client.openSurface(FOCUS_SURFACE_ID);
+      client.openScreen({
+        screenId: OPEN_AGENT_SCREEN_ID,
+        // The nonce makes a second press on the same workspace a new params object, so the screen
+        // runs its creation effect again instead of keeping the previous run's result.
+        params: {
+          workspaceId,
+          nonce: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+        },
+      });
     } catch (error) {
-      fail("open the session redirect", error);
-      consumeNewAgentRequest();
-      await createAgent(workspaceId);
+      fail("open the new-agent screen", error);
     }
   };
 

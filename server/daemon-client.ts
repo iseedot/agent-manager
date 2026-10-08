@@ -8,15 +8,6 @@ declare const require: ((specifier: string) => unknown) | undefined;
 const CLIENT_MODULE = "@getpaseo/client/internal/daemon-client";
 const CLIENT_ID_PREFIX = "agent-manager-";
 
-export interface WorkspaceRecoveryState {
-  kind: string;
-  action?: string;
-  reason?: string;
-  message?: string;
-  workspaceName?: string;
-  branch?: string | null;
-}
-
 export interface DaemonSessionClient {
   connect(): Promise<void>;
   close(): Promise<void>;
@@ -24,22 +15,7 @@ export interface DaemonSessionClient {
     filter?: { includeArchived?: boolean };
     page?: { limit?: number; cursor?: string };
   }): Promise<{ entries?: unknown }>;
-  restoreWorkspace(workspaceId: string, requestId?: string): Promise<void>;
-  setWorkspaceTitle(
-    workspaceId: string,
-    title: string | null,
-    requestId?: string,
-  ): Promise<{ title: string | null }>;
-  inspectWorkspaceRecovery(workspaceId: string, requestId?: string): Promise<WorkspaceRecoveryState>;
-  refreshAgent(agentId: string, requestId?: string): Promise<unknown>;
-  closeItems(input: { agentIds: string[]; terminalIds: string[] }): Promise<unknown>;
   getDaemonStatus(options?: unknown): Promise<{ serverId?: unknown }>;
-  listTerminals(
-    cwd?: string,
-    requestId?: string,
-    options?: { workspaceId?: string },
-  ): Promise<{ terminals?: Array<Record<string, unknown>> }>;
-  killTerminal(terminalId: string, requestId?: string): Promise<unknown>;
 }
 
 let cachedServerId: string | null = null;

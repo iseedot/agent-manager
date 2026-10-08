@@ -178,7 +178,7 @@ paseo plugin update agent-manager --yes     # later
 `"pluginsEnabled": true` in the daemon `config.json`, then `paseo reload`. Install once per daemon;
 every client connected to that host (including the official iOS app) gets the pill.
 
-Needs Paseo 0.10.0+. Nothing extra is installed: the plugin uses the daemon's own client, the session
+Needs Paseo 0.11.0+ (screens and `execCommand`). Nothing extra is installed: the plugin uses the daemon's own client, the session
 protocol on `ws://<daemon.listen>/ws` and the `paseo` CLI for hard deletes.
 
 ## Logs

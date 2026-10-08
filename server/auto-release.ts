@@ -66,6 +66,8 @@ let sweepTimer: ReturnType<typeof setInterval> | null = null;
 /** One flag per phase: a slow phase must never let the next tick start the same work twice. */
 let running = false;
 let cleaning = false;
+/** Event-driven releases: one pending timer per agent, armed when its turn ends. */
+const pendingReleases = new Map<string, ReturnType<typeof setTimeout>>();
 
 export function startAutoReleaseScheduler(): () => void {
   if (sweepTimer) {
@@ -80,7 +82,40 @@ export function startAutoReleaseScheduler(): () => void {
       clearInterval(sweepTimer);
       sweepTimer = null;
     }
+    for (const timer of pendingReleases.values()) {
+      clearTimeout(timer);
+    }
+    pendingReleases.clear();
   };
+}
+
+/**
+ * 0.11 lifecycle hook (`agent.turn_ended` in index.server.ts): release one runtime as soon as its
+ * turn has ended and the grace window has passed, instead of waiting up to a full tick. The tick
+ * stays as the safety net for runtimes that were already idle before the plugin loaded, and its
+ * own protections (running, initializing, waiting on a permission, inside the grace window) still
+ * apply because the release goes through the same `releaseRuntime`.
+ */
+export function scheduleReleaseAfterTurn(agentId: string, graceMs: number): void {
+  const existing = pendingReleases.get(agentId);
+  if (existing) {
+    clearTimeout(existing);
+  }
+  const timer = setTimeout(() => {
+    pendingReleases.delete(agentId);
+    void releaseRuntime(agentId)
+      .then((result) => {
+        if (result === "released") {
+          console.log(`agent-manager 事件释放 runtime ${agentId}`);
+        } else if (result !== "skipped") {
+          console.log(`agent-manager event release failed for ${agentId}: ${result}`);
+        }
+      })
+      .catch((error) => {
+        console.log(`agent-manager event release failed for ${agentId}: ${describe(error)}`);
+      });
+  }, Math.max(0, graceMs) + 1000);
+  pendingReleases.set(agentId, timer);
 }
 
 async function seedStatusThenTick(): Promise<void> {
