@@ -8,9 +8,9 @@ export interface AutoReleaseConfig {
   sweepIntervalMs: number;
   graceMs: number;
   cleanupIntervalMs: number;
-  purgeArchivedWorkspaces: boolean;
   deleteProviderSessions: boolean;
-  deleteOrphanProviderSessions: boolean;
+  deleteArchivedWorkspaces: boolean;
+  deleteArchivedAgents: boolean;
 }
 
 const MIN_SWEEP_INTERVAL_MS = 5000;
@@ -65,6 +65,8 @@ function envFlag(name: string, fallback: boolean): boolean {
 }
 
 export function autoReleaseConfig(): AutoReleaseConfig {
+  // The v1 names still work as aliases so an operator's environment survives the settings upgrade.
+  const legacyPurge = envFlag("PASEO_AGENT_MANAGER_PURGE_ARCHIVED", false);
   return {
     enabled: envFlag("PASEO_AGENT_MANAGER_ENABLED", stored.enabled),
     sweepIntervalMs: envNumber(
@@ -72,24 +74,23 @@ export function autoReleaseConfig(): AutoReleaseConfig {
       stored.sweepIntervalMinutes * 60000,
       MIN_SWEEP_INTERVAL_MS,
     ),
-    graceMs:
-      envNumber("PASEO_AGENT_MANAGER_GRACE_MINUTES", stored.graceMinutes, 0) * 60000,
+    graceMs: envNumber("PASEO_AGENT_MANAGER_GRACE_MINUTES", stored.graceMinutes, 0) * 60000,
     cleanupIntervalMs: envNumber(
       "PASEO_AGENT_MANAGER_CLEANUP_INTERVAL_MS",
       stored.cleanupIntervalHours * 3600000,
       MIN_CLEANUP_INTERVAL_MS,
     ),
-    purgeArchivedWorkspaces: envFlag(
-      "PASEO_AGENT_MANAGER_PURGE_ARCHIVED",
-      stored.purgeArchivedWorkspaces,
-    ),
     deleteProviderSessions: envFlag(
       "PASEO_AGENT_MANAGER_DELETE_PROVIDER_SESSIONS",
       stored.deleteProviderSessions,
     ),
-    deleteOrphanProviderSessions: envFlag(
-      "PASEO_AGENT_MANAGER_DELETE_ORPHAN_SESSIONS",
-      stored.deleteOrphanProviderSessions,
+    deleteArchivedWorkspaces: envFlag(
+      "PASEO_AGENT_MANAGER_DELETE_ARCHIVED_WORKSPACES",
+      legacyPurge || stored.deleteArchivedWorkspaces,
+    ),
+    deleteArchivedAgents: envFlag(
+      "PASEO_AGENT_MANAGER_DELETE_ARCHIVED_AGENTS",
+      legacyPurge || stored.deleteArchivedAgents,
     ),
   };
 }

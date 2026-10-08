@@ -9,9 +9,10 @@ export const workspacesRpc = defineRpc({
 });
 
 /**
- * The settings screen's manual purge button: runs the destructive cleanup immediately instead of
- * waiting for the next tick's 24-hour window. Always purges every archived workspace with its pi
- * session file.
+ * The settings screen's privacy cleanup button: runs every destructive pass immediately instead of
+ * waiting for the next tick. Always deletes every archived workspace, every archived agent and
+ * every archived project; pi transcripts and the orphan sweep only run while pi session files are
+ * on.
  */
 export const runCleanupRpc = defineRpc({
   name: "agent-manager.run-cleanup",
@@ -27,16 +28,7 @@ export const runCleanupRpc = defineRpc({
     ),
     deletedAgents: z.number(),
     deletedSessions: z.number(),
+    deletedProjects: z.number(),
     deletedOrphanSessions: z.number(),
   }),
-});
-
-/**
- * The settings screen's orphan-sweep button: run the "sessions Paseo does not know" pass immediately
- * instead of waiting for the next tick.
- */
-export const runOrphanSweepRpc = defineRpc({
-  name: "agent-manager.run-orphan-sweep",
-  input: z.object({}),
-  output: z.object({ deleted: z.number(), failed: z.number() }),
 });

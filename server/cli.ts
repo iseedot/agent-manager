@@ -13,15 +13,24 @@ function resolveCliBinary(): string {
 }
 
 /**
- * Hard delete goes through the `paseo` CLI. 0.11 ships `execCommand`, which handles Windows
+ * Hard deletes go through the `paseo` CLI. 0.11 ships `execCommand`, which handles Windows
  * `paseo.cmd`/`.bat` launchers and argv quoting, so this no longer hand-rolls `spawn` and a
  * stdout/stderr promise.
  */
 export async function deleteAgentViaCli(agentId: string): Promise<CliResult> {
+  return runCli(["agent", "delete", agentId]);
+}
+
+/** `paseo project delete` removes the project and the workspace records it owns. */
+export async function deleteProjectViaCli(projectId: string): Promise<CliResult> {
+  return runCli(["project", "delete", projectId]);
+}
+
+async function runCli(args: string[]): Promise<CliResult> {
   const binary = resolveCliBinary();
   const home = paseoHome();
   try {
-    const { stdout, stderr } = await execCommand(binary, ["agent", "delete", agentId, "--home", home], {
+    const { stdout, stderr } = await execCommand(binary, [...args, "--home", home], {
       env: { ...process.env, PASEO_HOME: home },
       timeout: 60_000,
       maxBuffer: 4 * 1024 * 1024,

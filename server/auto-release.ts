@@ -2,24 +2,17 @@ import { join } from "node:path";
 
 import { readFile } from "node:fs/promises";
 
-import { listAllAgents, type AgentRecord } from "./agents";
+import { listAllAgents, type AgentRecord, type PaseoLike } from "./agents";
 import { getDaemonClient, type DaemonSessionClient } from "./daemon-client";
 import { releaseAgents } from "./actions";
 import { paseoHome } from "./daemon-mcp";
 import { fireAndForget } from "./guard";
 import { formatMemory, readMemoryUsage } from "./host-memory";
-import { autoReleaseConfig, awaitAutoReleaseSettings, type AutoReleaseConfig } from "./settings";
+import { deleteArchivedProjects } from "./projects";
 import { deleteOrphanProviderSessions } from "./provider-sessions";
+import { autoReleaseConfig, awaitAutoReleaseSettings, type AutoReleaseConfig } from "./settings";
 import { describe, serializeWrite, str, writeJsonAtomic } from "./util";
-import {
-  deleteWorkspace,
-  listWorkspaceRows,
-  purgeAllArchived,
-  type RemovedWorkspace,
-} from "./workspaces";
-import type { PaseoLike } from "./agents";
-
-type CleanupMode = "empty" | "purge";
+import { deleteArchivedAgents, deleteArchivedWorkspaces, type RemovedWorkspace } from "./workspaces";
 
 interface AutoReleaseSnapshot {
   lastRunAt: string | null;
@@ -29,23 +22,26 @@ interface AutoReleaseSnapshot {
   lastError: string | null;
   nextRunAt: string | null;
   lastCleanupAt: string | null;
-  lastCleanupMode: CleanupMode | null;
-  lastCleanupSessions: boolean | null;
+  /** The destructive switches the last cleanup ran with; a change makes the cleanup due at once. */
+  lastCleanupSignature: string | null;
+  lastDeletedAgents: number;
   lastDeletedSessions: number;
-  lastOrphanSessions: boolean | null;
+  lastDeletedProjects: number;
   lastDeletedOrphanSessions: number;
 }
 
-// One timer runs the whole plugin, and one tick does two things:
+// One timer runs the whole plugin. `enabled` is its master switch: off stops the timer entirely,
+// and the settings screen's privacy cleanup button is then the only thing that deletes.
+//
+// A tick does two things:
 //   1. release every runtime that is neither working nor waiting on the user — there is no idle
 //      window, so the tick is the resolution, and the grace setting keeps a turn that ended seconds
 //      ago from being released on the tick it lands on;
-//   2. every so often (a day by default), clean up. Drop archived workspaces (either only the ones
-//      with no session records left, or — when the host turns the purge on — every archived
-//      workspace) along with the provider sessions attached to their agents, and — when the orphan
-//      switch is on — every provider session no Paseo agent record references.
-// The numbers and switches come from the plugin settings (host scope) with the environment as an
-// operator override; see shared/settings.ts and server/settings.ts.
+//   2. every so often (a day by default), delete what the switches name: archived workspaces (with
+//      the agents inside them) and archived agents whose workspace is not archived.
+// `deleteProviderSessions` is the only switch that touches the provider's own files (pi today);
+// with it off every deletion removes Paseo records only. Archived projects and orphan provider
+// sessions are left to the privacy cleanup button.
 const STATE_PATH = "agent-manager/auto-release.json";
 const DEFAULT_STATE: AutoReleaseSnapshot = {
   lastRunAt: null,
@@ -55,10 +51,10 @@ const DEFAULT_STATE: AutoReleaseSnapshot = {
   lastError: null,
   nextRunAt: null,
   lastCleanupAt: null,
-  lastCleanupMode: null,
-  lastCleanupSessions: null,
+  lastCleanupSignature: null,
+  lastDeletedAgents: 0,
   lastDeletedSessions: 0,
-  lastOrphanSessions: null,
+  lastDeletedProjects: 0,
   lastDeletedOrphanSessions: 0,
 };
 
@@ -126,6 +122,10 @@ async function seedStatusThenTick(): Promise<void> {
 /** One tick: release first (the part that frees resources), then the slow phase, then record. */
 async function tick(): Promise<void> {
   if (running) {
+    return;
+  }
+  // The master switch: off means the whole timer does nothing until it is turned back on.
+  if (!autoReleaseConfig().enabled) {
     return;
   }
   const config = autoReleaseConfig();
@@ -265,49 +265,48 @@ async function fetchAgent(client: DaemonSessionClient, agentId: string): Promise
   return agents.find((agent) => agent.id === agentId) ?? null;
 }
 
+/** The switches that decide what the destructive phase deletes, as one comparable string. */
+function cleanupSignature(config: AutoReleaseConfig): string {
+  return [
+    config.deleteArchivedWorkspaces ? 1 : 0,
+    config.deleteArchivedAgents ? 1 : 0,
+    config.deleteProviderSessions ? 1 : 0,
+  ].join("");
+}
+
 /**
  * The destructive phase. It runs after the tick has been recorded, so a slow or failing cleanup can
- * never change what the sweep reported. The workspace pass is skipped when the session listing
- * failed; the orphan sweep is independent of it.
+ * never change what the sweep reported. The workspace and agent passes are skipped when the session
+ * listing failed; the project and orphan passes belong to the privacy button only.
  */
 async function cleanupWorkspaces(
   state: AutoReleaseSnapshot,
   outcome: ReleaseOutcome,
   config: AutoReleaseConfig,
 ): Promise<void> {
-  const mode: CleanupMode = config.purgeArchivedWorkspaces ? "purge" : "empty";
-  if (cleaning || !cleanupDue(state, config, mode)) {
+  if (cleaning || !cleanupDue(state, config)) {
     return;
   }
   cleaning = true;
   try {
-    const result = await runCleanup(outcome, config, mode);
+    const result = await runCleanup(outcome, config);
     const finished: AutoReleaseSnapshot = {
       ...state,
       lastRemovedWorkspaces: result.removed,
-      lastCleanupMode: mode,
-      lastCleanupSessions: mode === "purge" && config.deleteProviderSessions,
+      lastCleanupSignature: cleanupSignature(config),
+      lastDeletedAgents: result.deletedAgents,
       lastDeletedSessions: result.deletedSessions,
-      lastOrphanSessions: config.deleteOrphanProviderSessions,
-      lastDeletedOrphanSessions: result.deletedOrphanSessions,
       lastCleanupAt: new Date().toISOString(),
     };
     await writeState(finished);
     for (const workspace of result.removed) {
       const name = workspace.name ?? workspace.workspaceId;
-      if (mode === "purge") {
-        console.log(
-          `释放 归档workspace ${name} 和里面 ${workspace.agents} 个agent，成功删除对应session ${workspace.deletedSessions} 个`,
-        );
-      } else {
-        console.log(`释放了 ${name} 空workspace`);
-      }
+      console.log(
+        `释放 归档workspace ${name} 和里面 ${workspace.agents} 个agent，成功删除对应session ${workspace.deletedSessions} 个`,
+      );
     }
-    if (mode === "purge" && result.deletedAgents > 0) {
+    if (result.deletedAgents > 0) {
       console.log(`删除了 ${result.deletedAgents} 个归档agent（所在workspace未归档）`);
-    }
-    if (result.deletedOrphanSessions > 0) {
-      console.log(`删除 ${result.deletedOrphanSessions} 个 paseo无记录session`);
     }
   } catch (cleanupError) {
     console.log(`agent-manager could not clean up workspaces: ${describe(cleanupError)}`);
@@ -321,137 +320,127 @@ export interface CleanupResult {
   /** Archived agents removed from workspaces that were not archived. */
   deletedAgents: number;
   deletedSessions: number;
+  deletedProjects: number;
   deletedOrphanSessions: number;
 }
 
+/** The periodic cleanup: only the two archived-item switches, never projects or orphan sessions. */
 async function runCleanup(
   outcome: ReleaseOutcome,
   config: AutoReleaseConfig,
-  mode: CleanupMode,
 ): Promise<CleanupResult> {
-  let removed: CleanupResult["removed"] = [];
+  const empty: CleanupResult = {
+    removed: [],
+    deletedAgents: 0,
+    deletedSessions: 0,
+    deletedProjects: 0,
+    deletedOrphanSessions: 0,
+  };
+  // The passes need the session listing: without it the archive state would be unknown for every
+  // workspace. They are independent of each other, so each switch runs on its own.
+  if (outcome.agents === null) {
+    return empty;
+  }
+  const client = await getDaemonClient();
+  const paseo: PaseoLike = {
+    agents: { list: (options) => client.fetchAgents(options as never) },
+  };
+  let removed: RemovedWorkspace[] = [];
   let deletedAgents = 0;
   let deletedSessions = 0;
-  // The workspace phase needs the session listing: without it "no session records" would be true for
-  // every workspace. The orphan sweep reads the agent records from disk, so it is independent of the
-  // daemon listing and still runs when that listing failed.
-  if (outcome.agents !== null) {
-    const client = await getDaemonClient();
-    const paseo: PaseoLike = {
-      agents: { list: (options) => client.fetchAgents(options as never) },
-    };
-    if (mode === "purge") {
-      const purged = await purgeAllArchived(paseo, {
-        deleteProviderSessions: config.deleteProviderSessions,
-      });
-      removed = purged.removed;
-      deletedAgents = purged.deletedAgents;
-      deletedSessions = purged.deletedSessions;
-    } else {
-      removed = await removeEmptyWorkspaces(paseo, outcome.agents);
-    }
+  if (config.deleteArchivedWorkspaces) {
+    const result = await deleteArchivedWorkspaces(paseo, {
+      deleteProviderSessions: config.deleteProviderSessions,
+    });
+    removed = result.removed;
+    deletedSessions += result.deletedSessions;
   }
-
-  let deletedOrphanSessions = 0;
-  if (config.deleteOrphanProviderSessions) {
-    const orphans = await deleteOrphanProviderSessions();
-    deletedOrphanSessions = orphans.deleted.length;
-    if (orphans.failed.length > 0) {
-      console.log(
-        `agent-manager could not remove ${orphans.failed.length} orphan provider session(s): ${orphans.failed[0]?.error ?? "unknown error"}`,
-      );
-    }
+  if (config.deleteArchivedAgents) {
+    const result = await deleteArchivedAgents(paseo, {
+      deleteProviderSessions: config.deleteProviderSessions,
+    });
+    deletedAgents = result.deletedAgents;
+    deletedSessions += result.deletedSessions;
   }
-  return { removed, deletedAgents, deletedSessions, deletedOrphanSessions };
+  return { ...empty, removed, deletedAgents, deletedSessions };
 }
 
 /**
- * The settings screen's "delete now" action: run the purge immediately instead of waiting for the
- * next tick's 24-hour window. It always purges every archived workspace with its provider (pi)
- * session file, keeps the orphan switch as configured, and refuses to overlap a running tick.
+ * The settings screen's privacy cleanup: run everything on the spot instead of waiting for the next
+ * tick. It deletes every archived workspace with its agents, every archived agent even in a
+ * workspace that is not archived, and every archived project with its workspaces and agents. When
+ * `deleteProviderSessions` is on it also removes each deleted agent's pi transcript and sweeps the
+ * orphan pi sessions; with it off it touches Paseo records only.
+ *
+ * The two delete switches are ignored: the button means "everything archived goes".
  */
-export async function runCleanupNow(): Promise<CleanupResult> {
+export async function runPrivacyCleanup(): Promise<CleanupResult> {
   if (running || cleaning) {
     throw new Error("A sweep or cleanup is already running. Try again in a moment.");
   }
   const config = autoReleaseConfig();
-  const effective: AutoReleaseConfig = {
-    ...config,
-    purgeArchivedWorkspaces: true,
-    deleteProviderSessions: true,
-  };
   const client = await getDaemonClient();
-  const agents = await listAllAgents((options) => client.fetchAgents(options as never));
   cleaning = true;
   try {
-    return await runCleanup({ released: [], skipped: 0, error: null, agents }, effective, "purge");
+    const paseo: PaseoLike = {
+      agents: { list: (options) => client.fetchAgents(options as never) },
+    };
+    const workspaces = await deleteArchivedWorkspaces(paseo, {
+      deleteProviderSessions: config.deleteProviderSessions,
+    });
+    // The button means "everything archived goes", so the agent pass also picks up agents whose
+    // archived workspace the workspace pass could not remove.
+    const unarchivedWorkspaceAgents = await deleteArchivedAgents(paseo, {
+      deleteProviderSessions: config.deleteProviderSessions,
+      includeArchivedWorkspaces: true,
+    });
+    const projects = await deleteArchivedProjects(paseo, {
+      deleteProviderSessions: config.deleteProviderSessions,
+    });
+
+    let deletedOrphanSessions = 0;
+    if (config.deleteProviderSessions) {
+      const orphans = await deleteOrphanProviderSessions();
+      deletedOrphanSessions = orphans.deleted.length;
+      if (orphans.failed.length > 0) {
+        console.log(
+          `agent-manager could not remove ${orphans.failed.length} orphan provider session(s): ${orphans.failed[0]?.error ?? "unknown error"}`,
+        );
+      }
+    }
+
+    if (projects.deletedProjects > 0) {
+      console.log(`删除了 ${projects.deletedProjects} 个归档project`);
+    }
+    if (deletedOrphanSessions > 0) {
+      console.log(`删除 ${deletedOrphanSessions} 个 paseo无记录session`);
+    }
+
+    return {
+      removed: workspaces.removed,
+      deletedAgents: unarchivedWorkspaceAgents.deletedAgents,
+      deletedSessions:
+        workspaces.deletedSessions +
+        unarchivedWorkspaceAgents.deletedSessions +
+        projects.deletedSessions,
+      deletedProjects: projects.deletedProjects,
+      deletedOrphanSessions,
+    };
   } finally {
     cleaning = false;
   }
 }
 
-export interface OrphanSweepResult {
-  deleted: number;
-  failed: number;
-}
-
 /**
- * The settings screen's orphan-sweep button: run the "sessions Paseo does not know" pass immediately
- * instead of waiting for the next tick, regardless of the switch. It reads the agent records from
- * disk, so it does not need the daemon listing and does not depend on the release switch either.
+ * Due when the interval has passed — or when any destructive switch changed since the last cleanup,
+ * so turning a delete switch on does not wait out a day.
  */
-export async function runOrphanSweepNow(): Promise<OrphanSweepResult> {
-  if (running || cleaning) {
-    throw new Error("A sweep or cleanup is already running. Try again in a moment.");
-  }
-  cleaning = true;
-  try {
-    const orphans = await deleteOrphanProviderSessions();
-    return { deleted: orphans.deleted.length, failed: orphans.failed.length };
-  } finally {
-    cleaning = false;
-  }
-}
-
-/**
- * Due when the interval has passed — or when any switch changed since the last cleanup, so turning
- * the purge, the session-file switch or the orphan sweep on does not wait out a day.
- */
-function cleanupDue(state: AutoReleaseSnapshot, config: AutoReleaseConfig, mode: CleanupMode): boolean {
-  if (state.lastCleanupMode !== mode) {
-    return true;
-  }
-  if (mode === "purge" && state.lastCleanupSessions !== config.deleteProviderSessions) {
-    return true;
-  }
-  if (state.lastOrphanSessions !== config.deleteOrphanProviderSessions) {
+function cleanupDue(state: AutoReleaseSnapshot, config: AutoReleaseConfig): boolean {
+  if (state.lastCleanupSignature !== cleanupSignature(config)) {
     return true;
   }
   const previous = Date.parse(state.lastCleanupAt ?? "");
   return !Number.isFinite(previous) || Date.now() - previous >= config.cleanupIntervalMs;
-}
-
-async function removeEmptyWorkspaces(
-  paseo: PaseoLike,
-  agents: readonly AgentRecord[],
-): Promise<RemovedWorkspace[]> {
-  const removed: RemovedWorkspace[] = [];
-  try {
-    const rows = await listWorkspaceRows();
-    const busy = new Set(agents.map((agent) => agent.workspaceId).filter((id): id is string => id !== null));
-    for (const row of rows) {
-      if (row.archivedAt === null || busy.has(row.workspaceId)) {
-        continue;
-      }
-      const result = await deleteWorkspace(paseo, row.workspaceId).catch(() => null);
-      if (result?.ok) {
-        removed.push({ workspaceId: row.workspaceId, name: row.name, agents: 0, deletedSessions: 0 });
-      }
-    }
-  } catch {
-    return removed;
-  }
-  return removed;
 }
 
 async function recordRun(

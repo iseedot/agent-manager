@@ -8,12 +8,13 @@ import { deleteAgentSessionFiles } from "./provider-sessions";
 import { serializeWrite, str, writeJsonAtomic } from "./util";
 
 /**
- * The daemon's workspace registry (`projects/workspaces.json`) plus the one operation the plugin
- * still performs on it: dropping an archived workspace that has no session records left.
+ * The daemon's workspace registry (`projects/workspaces.json`) plus the operations the plugin
+ * performs on it: dropping one archived workspace, and dropping every archived workspace at once.
  */
 
 export interface WorkspaceRow {
   workspaceId: string;
+  projectId: string | null;
   name: string | null;
   cwd: string;
   kind: string;
@@ -29,6 +30,7 @@ export interface DeleteWorkspaceOutcome {
 
 interface WorkspaceRecord {
   workspaceId?: unknown;
+  projectId?: unknown;
   cwd?: unknown;
   kind?: unknown;
   title?: unknown;
@@ -67,6 +69,7 @@ export async function listWorkspaceRows(): Promise<WorkspaceRow[]> {
     }
     rows.push({
       workspaceId,
+      projectId: str(record.projectId),
       name: str(record.title) ?? str(record.customName),
       cwd: str(record.cwd) ?? "",
       kind: str(record.kind) ?? "directory",
@@ -125,14 +128,22 @@ export async function deleteWorkspace(
     };
   }
 
-  await updateDeletedState((known) => known.add(workspaceId));
-  await stripWorkspaceRecord(workspaceId);
+  await forgetWorkspace(workspaceId);
   return {
     ok: true,
     message: `Deleted workspace "${target.name ?? target.cwd}" with ${removed.deleted.length} session(s).`,
     deletedAgents: removed.deleted,
     failed: removed.failed,
   };
+}
+
+/**
+ * Remembers a workspace as deleted and strips its registry record, so a daemon that still holds it
+ * in memory cannot bring it back. Used by the project pass too, so it is exported.
+ */
+export async function forgetWorkspace(workspaceId: string): Promise<void> {
+  await updateDeletedState((known) => known.add(workspaceId));
+  await stripWorkspaceRecord(workspaceId);
 }
 
 /** One workspace the cleanup actually removed, with what went with it (for the tick's log). */
@@ -143,24 +154,22 @@ export interface RemovedWorkspace {
   deletedSessions: number;
 }
 
-export interface PurgeOutcome {
+export interface DeleteArchivedWorkspacesOutcome {
   removed: RemovedWorkspace[];
   deletedSessions: number;
   sessionFailures: number;
 }
 
 /**
- * Deletes every archived workspace, session records included, even when agents remain — what the
- * pill's archiving means when the host is set up that way: nothing archived is kept.
+ * Deletes every archived workspace, with the agents inside it. When `deleteProviderSessions` is on
+ * the pi transcript goes first, because the record naming it is removed immediately after.
  *
- * Destructive and irreversible: once the records are gone the workspace cannot be restored. It is
- * off by default and only the settings (or an operator's environment) switch it on. Provider session
- * files go first, because the record naming them is removed immediately after.
+ * Destructive and irreversible; off by default and only the settings (or the privacy button) start it.
  */
-export async function purgeArchivedWorkspaces(
+export async function deleteArchivedWorkspaces(
   paseo: PaseoLike,
   options: { deleteProviderSessions: boolean },
-): Promise<PurgeOutcome> {
+): Promise<DeleteArchivedWorkspacesOutcome> {
   const rows = await listWorkspaceRows();
   const records = await listAllAgents(paseo.agents.list as unknown as AgentLister);
   const byWorkspace = new Map<string, AgentRecord[]>();
@@ -173,7 +182,7 @@ export async function purgeArchivedWorkspaces(
     byWorkspace.set(record.workspaceId, list);
   }
 
-  const removed: PurgeOutcome["removed"] = [];
+  const removed: RemovedWorkspace[] = [];
   let deletedSessions = 0;
   let sessionFailures = 0;
   for (const row of rows) {
@@ -201,43 +210,48 @@ export async function purgeArchivedWorkspaces(
   return { removed, deletedSessions, sessionFailures };
 }
 
-export interface PurgeAllOutcome extends PurgeOutcome {
-  /** Archived agents removed because their workspace was not archived (or they had none). */
+export interface DeleteArchivedAgentsOutcome {
   deletedAgents: number;
+  deletedSessions: number;
+  sessionFailures: number;
 }
 
 /**
- * Deletes every archived thing, not limited by the workspace:
- *   1. every archived workspace, with the agents and provider sessions inside it;
- *   2. every remaining archived agent — one whose workspace is not archived, or that has none —
- *      with its own provider session file.
- *
- * This is what the purge switch and the "delete now" button mean: nothing archived survives, even
- * inside a workspace that is still in use.
+ * Deletes every archived agent that lives in a workspace which is **not** archived (or in none at
+ * all) — the rule "an archived agent goes even when its workspace stays" — with its own pi session
+ * file when `deleteProviderSessions` is on. Agents inside an archived workspace belong to
+ * `deleteArchivedWorkspaces`; keeping the two apart makes each switch mean one thing.
  */
-export async function purgeAllArchived(
+export async function deleteArchivedAgents(
   paseo: PaseoLike,
-  options: { deleteProviderSessions: boolean },
-): Promise<PurgeAllOutcome> {
-  const workspaceOutcome = await purgeArchivedWorkspaces(paseo, options);
-  // Re-list after the workspace pass: those records are gone, so what is left is every archived
-  // agent that lived outside an archived workspace.
-  const remaining = (await listAllAgents(paseo.agents.list as unknown as AgentLister)).filter(
-    (record) => record.archivedAt !== null,
+  options: { deleteProviderSessions: boolean; includeArchivedWorkspaces?: boolean },
+): Promise<DeleteArchivedAgentsOutcome> {
+  const [rows, agents] = await Promise.all([
+    listWorkspaceRows(),
+    listAllAgents(paseo.agents.list as unknown as AgentLister),
+  ]);
+  const archivedWorkspaceIds = new Set(
+    rows.filter((row) => row.archivedAt !== null).map((row) => row.workspaceId),
   );
-  let deletedSessions = workspaceOutcome.deletedSessions;
-  let sessionFailures = workspaceOutcome.sessionFailures;
-  let deletedAgents = 0;
-  if (remaining.length > 0) {
-    if (options.deleteProviderSessions) {
-      const sessions = await deleteAgentSessionFiles(remaining).catch(() => null);
-      deletedSessions += sessions?.deleted.length ?? 0;
-      sessionFailures += sessions?.failed.length ?? 0;
-    }
-    const result = await deleteAgents(remaining.map((record) => record.id));
-    deletedAgents = result.deleted.length;
+  const remaining = agents.filter(
+    (record) =>
+      record.archivedAt !== null &&
+      (options.includeArchivedWorkspaces === true ||
+        record.workspaceId === null ||
+        !archivedWorkspaceIds.has(record.workspaceId)),
+  );
+  if (remaining.length === 0) {
+    return { deletedAgents: 0, deletedSessions: 0, sessionFailures: 0 };
   }
-  return { ...workspaceOutcome, deletedAgents, deletedSessions, sessionFailures };
+  let deletedSessions = 0;
+  let sessionFailures = 0;
+  if (options.deleteProviderSessions) {
+    const sessions = await deleteAgentSessionFiles(remaining).catch(() => null);
+    deletedSessions = sessions?.deleted.length ?? 0;
+    sessionFailures = sessions?.failed.length ?? 0;
+  }
+  const result = await deleteAgents(remaining.map((record) => record.id));
+  return { deletedAgents: result.deleted.length, deletedSessions, sessionFailures };
 }
 
 async function listWorkspaceAgents(

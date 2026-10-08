@@ -5,8 +5,8 @@ A Paseo plugin with two jobs:
 1. **Composer pill** — one pill above the composer, titled `Tabs`, that shows
    the open tabs of that workspace and lets you switch, close or open one.
 2. **Auto-release** — agent runtimes are released once their turn is over, whether or not the app is
-   open: one 15-minute tick releases everything that is not working or waiting on you and cleans up
-   archived workspaces once a day (see [Auto-release](#auto-release)).
+   open: one 15-minute tick releases everything that is not working or waiting on you and, once a
+   day, deletes the archived workspaces and agents the settings name (see [Auto-release](#auto-release)).
 
 The manager panel is gone, and so is every workspace-isolation behaviour: the plugin never creates,
 moves or removes a checkout, never reads project git state and no longer collects host metrics. It only
@@ -42,9 +42,9 @@ refetch and the tab counts and states stay current. Nothing is polled.
 
 ## Auto-release
 
-The whole release pass has a master switch in the plugin settings — **Auto-release**, on by default.
-Turn it off and no runtime is released, neither on the tick nor when a turn ends; the daily cleanup
-keeps running under its own switches.
+The whole timer has a master switch in the plugin settings — **Auto-release**, on by default. Turn it
+off and the timer stops entirely: no runtime is released, neither on the tick nor when a turn ends,
+and no automatic cleanup runs. The settings screen's **Privacy cleanup** button still works.
 
 **One timer.** A tick every fifteen minutes does both jobs, and it keeps working while the app is
 closed:
@@ -57,13 +57,14 @@ closed:
    released, and a runtime the daemon touched inside the **grace window** (five minutes) is left for the
    next tick, so a turn that ends just before a tick is not released while its answer is still being
    read.
-2. **Cleanup, once a day.** Archived workspaces with no session records left are deleted. There is a
-   second, switchable mode around it — see [Purging archived workspaces](#purging-archived-workspaces).
-   It is the only destructive step and nothing depends on it being prompt, so it rides on the tick but
-   at most every twenty-four hours. The timestamp lives in the state file, so a reload cannot postpone
-   it forever, and the session list the release pass already read is reused instead of listing twice.
-   When that listing failed the phase is skipped entirely — "no session records" would otherwise be
-   true for every workspace.
+2. **Cleanup, once a day.** The two delete switches decide what goes — see
+   [Deleting archived workspaces and agents](#deleting-archived-workspaces-and-agents).
+   **Delete archived workspaces** removes every archived workspace with the agents inside it;
+   **Delete archived agents** removes every archived agent whose workspace is not archived. Nothing
+   depends on it being prompt, so it rides on the tick but at most every twenty-four hours. The
+   timestamp lives in the state file, so a reload cannot postpone it forever, and the session list the
+   release pass already read is reused instead of listing twice. When that listing failed the phase is
+   skipped entirely.
 
 Nothing else wakes up: no per-session timer, no due timer, and no second timer for the phases a tick
 triggers. A phase that is still running when the next tick arrives is skipped by its own flag, so slow
@@ -74,41 +75,57 @@ remembered in `~/.paseo/agent-manager/auto-release.json`.
 Releasing goes through the daemon's own close action (MCP `kill_agent`), so the record stays valid and
 the next message resumes the session.
 
-## Purging archived workspaces
+## Deleting archived workspaces and agents
 
-By default "archived" is reversible: the records stay and the daily cleanup only removes workspaces
-that have no sessions left. **Purge archived workspaces** (off by default) makes archiving final and is
-not limited by the workspace: every archived workspace **and every archived agent** is deleted at the
-next cleanup, sessions included. An archived agent is deleted even when its workspace is still in use.
+By default "archived" is reversible: the records stay and the automatic cleanup does nothing. Two
+independent switches make it final, once a day or from the **Privacy cleanup** button:
+
+- **Delete archived workspaces** — every archived workspace is deleted, with every agent inside it.
+- **Delete archived agents** — every archived agent is deleted, even one whose workspace is not
+  archived (or has none). An agent inside an archived workspace belongs to the first switch.
 
 ```
-every archived workspace
-  └─ pi agent?  → delete its transcript (persistence.nativeHandle)
-  └─ `paseo agent delete` for each session record
+Delete archived workspaces
+  └─ `paseo agent delete` for each agent inside
   └─ drop the workspace record
 
-every remaining archived agent (workspace not archived, or none)
-  └─ pi agent?  → delete its transcript
+Delete archived agents
+  └─ every archived agent whose workspace is not archived (or has none)
   └─ `paseo agent delete`
+
+Delete pi session files (both passes)
+  └─ pi agent?  → delete its transcript (persistence.nativeHandle)
 ```
 
-The **Delete every archived workspace and agent now** button runs exactly that purge on the spot,
-without waiting for the next cleanup window.
+**Delete pi session files** is the one switch that touches a provider's own files: with it on, every
+agent the two passes remove also has its pi transcript deleted. With it off they remove Paseo records
+only. Only **pi** is supported: it is the one provider that writes the absolute path of its transcript
+into the agent record (`persistence.nativeHandle`), so the file can be deleted exactly. Every other
+provider either keeps its transcript where this plugin cannot know (opencode, the ACP agents: copilot,
+cursor, kimi, kiro, trae, hermes) or names it with an id instead of a path (claude, codex) — guessed
+paths would risk deleting a file that was never ours, so those are left alone.
 
-**Delete pi session files** (off by default, only read while purging) removes the provider's own
-transcript as well. Only **pi** is supported: it is the one provider that writes the absolute path of
-its transcript into the agent record (`persistence.nativeHandle`), so the file can be deleted exactly.
-Every other provider either keeps its transcript where this plugin cannot know (opencode, the ACP
-agents: copilot, cursor, kimi, kiro, trae, hermes) or names it with an id instead of a path (claude,
-codex) — guessed paths would risk deleting a file that was never ours, so those are left alone.
+## Privacy cleanup
 
-## Orphan provider sessions
+**Privacy cleanup** is the one button, drawn in the theme's danger colour and with no second
+confirmation. It runs every pass at once, without waiting for the cleanup interval, and ignores the two
+delete switches: everything archived goes.
 
-**Delete sessions Paseo does not know** (off by default) is a second, independent destructive switch
-that runs in the same cleanup pass as the two above, without conflicting with them: after the
-workspace pass it enumerates each supported provider's own session store and deletes every transcript
-that **no Paseo agent record references** — sessions created by running the provider directly, outside
-Paseo. The **Delete sessions Paseo does not know now** button runs that sweep on the spot.
+```
+every archived workspace   + its agents
+every archived agent       + even one whose workspace is not archived
+every archived project     + its workspaces and agents
+orphan pi sessions           only while pi session files are on
+```
+
+The result is that only the pi sessions, workspaces and projects a live agent still references remain.
+The project pass goes through the daemon's own `paseo project delete`, so the registries stay
+consistent.
+
+The orphan sweep inside it enumerates pi's own session store and deletes every transcript that **no
+Paseo agent record references** — sessions created by running the provider directly, outside Paseo. It
+only runs while **Delete pi session files** is on, because it is the pass that touches the provider's
+files.
 
 For **pi** the store is `<agent-dir>/sessions/<cwd-slug>/<timestamp>_<uuid>.jsonl` (agent dir
 `~/.pi/agent` unless `PI_CODING_AGENT_DIR` moves it; `PI_CODING_AGENT_SESSION_DIR`, the
@@ -116,8 +133,7 @@ For **pi** the store is `<agent-dir>/sessions/<cwd-slug>/<timestamp>_<uuid>.json
 can infer from the absolute paths Paseo recorded). A file is kept when either its absolute path or its
 session id appears in an agent record. Only `*.jsonl` transcripts are touched.
 
-This is irreversible and can delete a session you were still using outside Paseo, which is why it is
-off by default.
+This is irreversible and can delete a session you were still using outside Paseo.
 
 ### Provider sessions are not coupled
 
@@ -125,18 +141,20 @@ The two session-deleting paths never hard-code a provider in the cleanup code:
 
 - `server/provider-sessions.ts` is the dispatcher. It reads each agent's `persistence`, then routes
   through a `switch (provider)` — one `case` per provider — for both "delete the session behind this
-  agent" (purge) and "delete every session this provider has that Paseo does not" (orphan sweep).
+  agent" (the workspace and agent passes) and "delete every session this provider has that Paseo does
+  not" (the orphan sweep).
 - `server/provider-sessions-pi.ts` holds **everything pi-specific**: how a transcript is recognised,
   where pi stores sessions, and how they are enumerated.
 
 Adding a provider means one new sibling module and one `case` in each `switch`; nothing else in the
 plugin changes.
 
-Switching either of those on makes the cleanup due on the next tick instead of waiting out the
-interval, so a purge does not sit for a day after it was asked for.
+Switching a delete switch on makes the cleanup due on the next tick instead of waiting out the
+interval, so a deletion does not sit for a day after it was asked for.
 
-This is irreversible: after the purge the workspace and its sessions cannot be restored. Nothing in the
-plugin ever deletes project content, only records and the pi transcript.
+This is irreversible: after the cleanup the workspace, its agents and (while pi session files are on)
+the pi transcripts cannot be restored. Nothing in the plugin ever deletes project content, only
+records and the pi transcript.
 
 ## Settings
 
@@ -145,15 +163,14 @@ screen can change all of it; every value has a default and nothing has to be con
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
-| Auto-release | on | release idle runtimes; off leaves every runtime running (the cleanup below still runs) |
+| Auto-release | on | run the timer; off stops release and the automatic cleanup (the button still works) |
 | Tick every (minutes) | `15` | the single timer's cadence |
 | Grace (minutes) | `5` | a runtime touched this recently waits for the next tick (`0` releases on the tick) |
 | Cleanup every (hours) | `24` | how often the destructive phase may run |
-| Purge archived workspaces | off | delete every archived workspace, sessions included |
-| Delete pi session files | off | also delete the pi transcript while purging |
-| Delete sessions Paseo does not know | off | delete provider transcripts with no Paseo agent record (pi only today) |
-| Delete every archived workspace and agent now | — | button: run the purge immediately (every archived workspace and every archived agent, even one inside a workspace that is not archived, plus its pi session file), without waiting for the cleanup interval |
-| Delete sessions Paseo does not know now | — | button: run the orphan sweep immediately (every provider transcript with no Paseo agent record), without waiting for the cleanup interval |
+| Delete pi session files | off | also delete the pi transcript when an agent is deleted; off deletes Paseo records only |
+| Delete archived workspaces | off | delete every archived workspace, with the agents inside it |
+| Delete archived agents | off | delete every archived agent, even in a workspace that is not archived |
+| Privacy cleanup | — | button: run every pass now — archived workspaces, agents and projects, plus orphan pi sessions while pi session files are on — without waiting for the cleanup interval |
 
 Values live in `~/.paseo/plugin-settings/agent-manager/auto-release.json` (`{ version, values }`, with the
 zod schema as the contract). An operator can override any of them from the daemon environment, and the
@@ -162,13 +179,14 @@ value that is not a positive number is ignored:
 
 | Environment variable | Overrides |
 | --- | --- |
-| `PASEO_AGENT_MANAGER_ENABLED` | `1`/`0` — turn auto-release off (or back on) without the app |
+| `PASEO_AGENT_MANAGER_ENABLED` | `1`/`0` — turn the whole timer off (or back on) without the app |
 | `PASEO_AGENT_MANAGER_SWEEP_INTERVAL_MS` | tick cadence in ms, minimum `5000` |
 | `PASEO_AGENT_MANAGER_GRACE_MINUTES` | grace in minutes |
 | `PASEO_AGENT_MANAGER_CLEANUP_INTERVAL_MS` | cleanup interval in ms, minimum `60000` |
-| `PASEO_AGENT_MANAGER_PURGE_ARCHIVED` | `1`/`0` — purge mode |
-| `PASEO_AGENT_MANAGER_DELETE_PROVIDER_SESSIONS` | `1`/`0` — delete the pi transcript too |
-| `PASEO_AGENT_MANAGER_DELETE_ORPHAN_SESSIONS` | `1`/`0` — orphan provider sweep |
+| `PASEO_AGENT_MANAGER_DELETE_PROVIDER_SESSIONS` | `1`/`0` — delete pi transcripts too |
+| `PASEO_AGENT_MANAGER_DELETE_ARCHIVED_WORKSPACES` | `1`/`0` — delete archived workspaces |
+| `PASEO_AGENT_MANAGER_DELETE_ARCHIVED_AGENTS` | `1`/`0` — delete archived agents |
+| `PASEO_AGENT_MANAGER_PURGE_ARCHIVED` | `1`/`0` — legacy alias: sets both archived switches |
 
 ### Earlier profiles
 
@@ -207,9 +225,10 @@ instead). The tick writes a line when it actually did something:
 | When | Line |
 | --- | --- |
 | a sweep released runtimes | `释放了 3 个进程，当前系统 mem 52% swap 13%` |
-| the daily cleanup removed an empty archived workspace | `释放了 <name> 空workspace` |
-| the daily purge removed an archived workspace | `释放 归档workspace <name> 和里面 4 个agent，成功删除对应session 4 个` |
-| the orphan sweep removed unmanaged sessions | `删除 73 个 paseo无记录session` |
+| a cleanup removed an archived workspace | `释放 归档workspace <name> 和里面 4 个agent，成功删除对应session 4 个` |
+| a cleanup removed archived agents outside archived workspaces | `删除了 3 个归档agent（所在workspace未归档）` |
+| the privacy button removed archived projects | `删除了 2 个归档project` |
+| the privacy button removed unmanaged sessions | `删除 73 个 paseo无记录session` |
 
 Failures keep their own `agent-manager …` lines. Everything else, silence.
 

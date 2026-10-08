@@ -1,9 +1,8 @@
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 
-import { runCleanupRpc, runOrphanSweepRpc, workspacesRpc } from "./shared/contracts";
+import { runCleanupRpc, workspacesRpc } from "./shared/contracts";
 import {
-  runCleanupNow,
-  runOrphanSweepNow,
+  runPrivacyCleanup,
   scheduleReleaseAfterTurn,
   startAutoReleaseScheduler,
 } from "./server/auto-release";
@@ -17,8 +16,7 @@ export default function contribute(server: PluginServerContext) {
   const removeAutoReleaseSettings = registerAutoReleaseSettings(server);
 
   server.handle(workspacesRpc, async () => ({ serverId: await resolveServerId() }));
-  server.handle(runCleanupRpc, async () => runCleanupNow());
-  server.handle(runOrphanSweepRpc, async () => runOrphanSweepNow());
+  server.handle(runCleanupRpc, async () => runPrivacyCleanup());
 
   const stopAutoRelease = startAutoReleaseScheduler();
 

@@ -1,5 +1,5 @@
 import { useCallback, useMemo, useState } from "react";
-import { Text } from "react-native";
+import { Pressable, Text, View } from "react-native";
 import { useRpc, useSettings, type PluginSurfaceProps } from "@getpaseo/plugin/client";
 import type { SettingsState } from "@getpaseo/plugin/client";
 import {
@@ -11,7 +11,7 @@ import {
   SettingsSwitch,
 } from "@getpaseo/plugin/client/ui";
 
-import { runCleanupRpc, runOrphanSweepRpc } from "../shared/contracts";
+import { runCleanupRpc } from "../shared/contracts";
 import { autoReleaseSettings } from "../shared/settings";
 
 type Ready = Extract<SettingsState<typeof autoReleaseSettings.schema>, { status: "ready" }>;
@@ -25,17 +25,17 @@ const NUMBER_FIELDS: Array<{
   {
     key: "sweepIntervalMinutes",
     label: "Tick every (minutes)",
-    hint: "One tick releases runtimes and runs the cleanup.",
+    hint: "Releases runtimes and runs the cleanup.",
   },
   {
     key: "graceMinutes",
     label: "Grace (minutes)",
-    hint: "A session touched this recently is left alone until the next tick. 0 releases on the tick.",
+    hint: "Skip runtimes touched this recently. 0 releases on the tick.",
   },
   {
     key: "cleanupIntervalHours",
     label: "Cleanup every (hours)",
-    hint: "How often the destructive phase below is allowed to run.",
+    hint: "How often the cleanup may run.",
   },
 ];
 
@@ -77,20 +77,42 @@ function Numbers({ settings, theme }: { settings: Ready; theme: PluginSurfacePro
   );
 }
 
-/** One destructive action with its own busy/result state. `task` returns the line to show. */
-function RunNowAction({
-  theme,
-  label,
-  hint,
-  actionLabel,
-  task,
-}: {
-  theme: PluginSurfaceProps["theme"];
-  label: string;
-  hint: string;
-  actionLabel: string;
-  task: () => Promise<string>;
-}) {
+function describeResult(result: {
+  removed: Array<{ agents: number }>;
+  deletedAgents: number;
+  deletedSessions: number;
+  deletedProjects: number;
+  deletedOrphanSessions: number;
+}): string {
+  const workspaces = result.removed.length;
+  const agents = result.deletedAgents + result.removed.reduce((total, item) => total + item.agents, 0);
+  const projects = result.deletedProjects;
+  const sessions = result.deletedSessions + result.deletedOrphanSessions;
+  if (workspaces === 0 && agents === 0 && projects === 0 && sessions === 0) {
+    return "Nothing archived to delete.";
+  }
+  const parts: string[] = [];
+  if (workspaces > 0) {
+    parts.push(`${workspaces} archived workspace${workspaces === 1 ? "" : "s"}`);
+  }
+  if (agents > 0) {
+    parts.push(`${agents} archived agent${agents === 1 ? "" : "s"}`);
+  }
+  if (projects > 0) {
+    parts.push(`${projects} archived project${projects === 1 ? "" : "s"}`);
+  }
+  if (sessions > 0) {
+    parts.push(`${sessions} pi session file${sessions === 1 ? "" : "s"}`);
+  }
+  return `Deleted ${parts.join(", ")}.`;
+}
+
+/**
+ * The one destructive action, in the theme's danger colour so it cannot be mistaken for a toggle:
+ * it purges every archived thing at once, without a second confirmation.
+ */
+function PrivacyCleanup({ theme }: { theme: PluginSurfaceProps["theme"] }) {
+  const runCleanup = useRpc(runCleanupRpc);
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -103,78 +125,39 @@ function RunNowAction({
     setNote(null);
     setError(null);
     try {
-      setNote(await task());
+      setNote(describeResult(await runCleanup({})));
     } catch (runError) {
       setError(runError instanceof Error ? runError.message : String(runError));
     } finally {
       setBusy(false);
     }
-  }, [busy, task]);
+  }, [busy, runCleanup]);
   return (
-    <>
-      <SettingsAction
-        label={label}
-        hint={hint}
-        actionLabel={busy ? `${actionLabel}…` : actionLabel}
+    <View style={{ gap: 6 }}>
+      <Pressable
+        accessibilityRole="button"
         disabled={busy}
-        error={error}
         onPress={() => void run()}
-      />
+        style={({ pressed }) => ({
+          alignItems: "center",
+          backgroundColor: theme.colors.statusDanger,
+          borderRadius: 10,
+          opacity: busy ? 0.6 : pressed ? 0.85 : 1,
+          paddingHorizontal: 16,
+          paddingVertical: 12,
+        })}
+      >
+        <Text style={{ color: "#fff", fontWeight: "700" }}>
+          {busy ? "Cleaning up…" : "Privacy cleanup"}
+        </Text>
+      </Pressable>
+      <Text style={style}>
+        Delete every archived workspace, agent and project now, plus orphan pi sessions while pi
+        session files are on. Irreversible.
+      </Text>
       {note ? <Text style={style}>{note}</Text> : null}
-    </>
-  );
-}
-
-function DeleteArchivedNow({ theme }: { theme: PluginSurfaceProps["theme"] }) {
-  const runCleanup = useRpc(runCleanupRpc);
-  const task = useCallback(async () => {
-    const result = await runCleanup({});
-    const workspaces = result.removed.length;
-    const agents =
-      result.deletedAgents + result.removed.reduce((total, item) => total + item.agents, 0);
-    const sessions = result.deletedSessions;
-    if (workspaces === 0 && agents === 0) {
-      return "No archived workspace or agent to delete.";
-    }
-    const parts: string[] = [];
-    if (workspaces > 0) {
-      parts.push(`${workspaces} archived workspace${workspaces === 1 ? "" : "s"}`);
-    }
-    if (agents > 0) {
-      parts.push(`${agents} archived agent${agents === 1 ? "" : "s"}`);
-    }
-    const detail = sessions > 0 ? ` and ${sessions} pi session file${sessions === 1 ? "" : "s"}` : "";
-    return `Deleted ${parts.join(" and ")}${detail}.`;
-  }, [runCleanup]);
-  return (
-    <RunNowAction
-      theme={theme}
-      label="Delete every archived workspace and agent now"
-      hint="Runs the purge immediately: every archived workspace and every archived agent, even one inside a workspace that is not archived, with its pi session file. Irreversible; ignores the cleanup interval."
-      actionLabel="Delete now"
-      task={task}
-    />
-  );
-}
-
-function SweepOrphansNow({ theme }: { theme: PluginSurfaceProps["theme"] }) {
-  const sweep = useRpc(runOrphanSweepRpc);
-  const task = useCallback(async () => {
-    const result = await sweep({});
-    if (result.deleted === 0 && result.failed === 0) {
-      return "No unmanaged session to delete.";
-    }
-    const failed = result.failed > 0 ? ` (${result.failed} failed)` : "";
-    return `Deleted ${result.deleted} unmanaged session${result.deleted === 1 ? "" : "s"}${failed}.`;
-  }, [sweep]);
-  return (
-    <RunNowAction
-      theme={theme}
-      label="Delete sessions Paseo does not know now"
-      hint="Runs the orphan sweep immediately: every provider transcript with no Paseo agent record. Only pi is supported today; irreversible."
-      actionLabel="Delete now"
-      task={task}
-    />
+      {error ? <Text style={{ color: theme.colors.statusDanger }}>{error}</Text> : null}
+    </View>
   );
 }
 
@@ -184,9 +167,9 @@ function Controls({ settings, theme }: { settings: Ready; theme: PluginSurfacePr
     (
       key:
         | "enabled"
-        | "purgeArchivedWorkspaces"
         | "deleteProviderSessions"
-        | "deleteOrphanProviderSessions",
+        | "deleteArchivedWorkspaces"
+        | "deleteArchivedAgents",
       value: boolean,
     ) => {
       void settings.save({ ...settings.values, [key]: value }, settings.revision);
@@ -194,55 +177,49 @@ function Controls({ settings, theme }: { settings: Ready; theme: PluginSurfacePr
     [settings],
   );
   const enabled = settings.values.enabled;
-  const purge = settings.values.purgeArchivedWorkspaces;
   const sessions = settings.values.deleteProviderSessions;
-  const orphans = settings.values.deleteOrphanProviderSessions;
+  const workspaces = settings.values.deleteArchivedWorkspaces;
+  const agents = settings.values.deleteArchivedAgents;
   return (
     <SettingsSection title="Auto-release">
       <SettingsCard>
         <SettingsSwitch
           label="Auto-release"
-          hint="Off: idle runtimes are never released, neither on the tick nor when a turn ends. The cleanup switches below still apply."
+          hint="Run the timer. Off stops release and the automatic cleanup; the button below still works."
           value={enabled}
           disabled={settings.saving}
           onValueChange={(value) => toggle("enabled", value)}
         />
         <SettingsSwitch
-          label="Purge archived workspaces"
-          hint="Deletes every archived workspace, sessions included, even when agents remain."
-          value={purge}
-          disabled={settings.saving}
-          onValueChange={(value) => toggle("purgeArchivedWorkspaces", value)}
-        />
-        <SettingsSwitch
           label="Delete pi session files"
-          hint="Only while purging, and only pi: its transcript path is recorded, so it can be removed exactly."
+          hint="Also delete pi transcripts when deleting agents. Off deletes Paseo records only."
           value={sessions}
-          disabled={settings.saving || !purge}
+          disabled={settings.saving}
           onValueChange={(value) => toggle("deleteProviderSessions", value)}
         />
         <SettingsSwitch
-          label="Delete sessions Paseo does not know"
-          hint="Removes provider transcripts with no Paseo agent record, i.e. sessions created by running the provider directly. Only pi is supported today; irreversible."
-          value={orphans}
+          label="Delete archived workspaces"
+          hint="Delete every archived workspace, with the agents inside it."
+          value={workspaces}
           disabled={settings.saving}
-          onValueChange={(value) => toggle("deleteOrphanProviderSessions", value)}
+          onValueChange={(value) => toggle("deleteArchivedWorkspaces", value)}
+        />
+        <SettingsSwitch
+          label="Delete archived agents"
+          hint="Delete every archived agent, even in a workspace that is not archived."
+          value={agents}
+          disabled={settings.saving}
+          onValueChange={(value) => toggle("deleteArchivedAgents", value)}
         />
       </SettingsCard>
       <SettingsCard>
-        <DeleteArchivedNow theme={theme} />
-        <SweepOrphansNow theme={theme} />
+        <PrivacyCleanup theme={theme} />
       </SettingsCard>
       <Text style={style}>
-        {purge
-          ? "Archived workspaces will be deleted for good at the next cleanup; they cannot be restored."
-          : "Archived workspaces are kept unless they have no sessions left."}
+        {workspaces || agents
+          ? "Archived items are deleted at the next cleanup. Cannot be undone."
+          : "Nothing archived is deleted automatically."}
       </Text>
-      {orphans ? (
-        <Text style={style}>
-          Provider sessions with no Paseo record will be deleted at the next cleanup.
-        </Text>
-      ) : null}
       <Numbers key={settings.revision} settings={settings} theme={theme} />
     </SettingsSection>
   );
