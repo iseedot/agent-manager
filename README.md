@@ -77,15 +77,23 @@ the next message resumes the session.
 ## Purging archived workspaces
 
 By default "archived" is reversible: the records stay and the daily cleanup only removes workspaces
-that have no sessions left. **Purge archived workspaces** (off by default) makes archiving final — every
-archived workspace is deleted at the next cleanup, sessions included, whether or not agents remain.
+that have no sessions left. **Purge archived workspaces** (off by default) makes archiving final and is
+not limited by the workspace: every archived workspace **and every archived agent** is deleted at the
+next cleanup, sessions included. An archived agent is deleted even when its workspace is still in use.
 
 ```
 every archived workspace
   └─ pi agent?  → delete its transcript (persistence.nativeHandle)
   └─ `paseo agent delete` for each session record
   └─ drop the workspace record
+
+every remaining archived agent (workspace not archived, or none)
+  └─ pi agent?  → delete its transcript
+  └─ `paseo agent delete`
 ```
+
+The **Delete every archived workspace and agent now** button runs exactly that purge on the spot,
+without waiting for the next cleanup window.
 
 **Delete pi session files** (off by default, only read while purging) removes the provider's own
 transcript as well. Only **pi** is supported: it is the one provider that writes the absolute path of
@@ -144,7 +152,7 @@ screen can change all of it; every value has a default and nothing has to be con
 | Purge archived workspaces | off | delete every archived workspace, sessions included |
 | Delete pi session files | off | also delete the pi transcript while purging |
 | Delete sessions Paseo does not know | off | delete provider transcripts with no Paseo agent record (pi only today) |
-| Delete archived workspaces now | — | button: run the purge immediately (every archived workspace plus its pi session file), without waiting for the cleanup interval |
+| Delete every archived workspace and agent now | — | button: run the purge immediately (every archived workspace and every archived agent, even one inside a workspace that is not archived, plus its pi session file), without waiting for the cleanup interval |
 
 Values live in `~/.paseo/plugin-settings/agent-manager/auto-release.json` (`{ version, values }`, with the
 zod schema as the contract). An operator can override any of them from the daemon environment, and the

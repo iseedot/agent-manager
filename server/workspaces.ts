@@ -201,6 +201,45 @@ export async function purgeArchivedWorkspaces(
   return { removed, deletedSessions, sessionFailures };
 }
 
+export interface PurgeAllOutcome extends PurgeOutcome {
+  /** Archived agents removed because their workspace was not archived (or they had none). */
+  deletedAgents: number;
+}
+
+/**
+ * Deletes every archived thing, not limited by the workspace:
+ *   1. every archived workspace, with the agents and provider sessions inside it;
+ *   2. every remaining archived agent — one whose workspace is not archived, or that has none —
+ *      with its own provider session file.
+ *
+ * This is what the purge switch and the "delete now" button mean: nothing archived survives, even
+ * inside a workspace that is still in use.
+ */
+export async function purgeAllArchived(
+  paseo: PaseoLike,
+  options: { deleteProviderSessions: boolean },
+): Promise<PurgeAllOutcome> {
+  const workspaceOutcome = await purgeArchivedWorkspaces(paseo, options);
+  // Re-list after the workspace pass: those records are gone, so what is left is every archived
+  // agent that lived outside an archived workspace.
+  const remaining = (await listAllAgents(paseo.agents.list as unknown as AgentLister)).filter(
+    (record) => record.archivedAt !== null,
+  );
+  let deletedSessions = workspaceOutcome.deletedSessions;
+  let sessionFailures = workspaceOutcome.sessionFailures;
+  let deletedAgents = 0;
+  if (remaining.length > 0) {
+    if (options.deleteProviderSessions) {
+      const sessions = await deleteAgentSessionFiles(remaining).catch(() => null);
+      deletedSessions += sessions?.deleted.length ?? 0;
+      sessionFailures += sessions?.failed.length ?? 0;
+    }
+    const result = await deleteAgents(remaining.map((record) => record.id));
+    deletedAgents = result.deleted.length;
+  }
+  return { ...workspaceOutcome, deletedAgents, deletedSessions, sessionFailures };
+}
+
 async function listWorkspaceAgents(
   paseo: PaseoLike,
   workspaceId: string,

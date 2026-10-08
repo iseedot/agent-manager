@@ -25,6 +25,7 @@ export const runCleanupRpc = defineRpc({
         deletedSessions: z.number(),
       }),
     ),
+    deletedAgents: z.number(),
     deletedSessions: z.number(),
     deletedOrphanSessions: z.number(),
   }),

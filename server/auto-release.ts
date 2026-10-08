@@ -14,7 +14,7 @@ import { describe, serializeWrite, str, writeJsonAtomic } from "./util";
 import {
   deleteWorkspace,
   listWorkspaceRows,
-  purgeArchivedWorkspaces,
+  purgeAllArchived,
   type RemovedWorkspace,
 } from "./workspaces";
 import type { PaseoLike } from "./agents";
@@ -303,6 +303,9 @@ async function cleanupWorkspaces(
         console.log(`释放了 ${name} 空workspace`);
       }
     }
+    if (mode === "purge" && result.deletedAgents > 0) {
+      console.log(`删除了 ${result.deletedAgents} 个归档agent（所在workspace未归档）`);
+    }
     if (result.deletedOrphanSessions > 0) {
       console.log(`删除 ${result.deletedOrphanSessions} 个 paseo无记录session`);
     }
@@ -315,6 +318,8 @@ async function cleanupWorkspaces(
 
 export interface CleanupResult {
   removed: RemovedWorkspace[];
+  /** Archived agents removed from workspaces that were not archived. */
+  deletedAgents: number;
   deletedSessions: number;
   deletedOrphanSessions: number;
 }
@@ -325,6 +330,7 @@ async function runCleanup(
   mode: CleanupMode,
 ): Promise<CleanupResult> {
   let removed: CleanupResult["removed"] = [];
+  let deletedAgents = 0;
   let deletedSessions = 0;
   // The workspace phase needs the session listing: without it "no session records" would be true for
   // every workspace. The orphan sweep reads the agent records from disk, so it is independent of the
@@ -335,10 +341,11 @@ async function runCleanup(
       agents: { list: (options) => client.fetchAgents(options as never) },
     };
     if (mode === "purge") {
-      const purged = await purgeArchivedWorkspaces(paseo, {
+      const purged = await purgeAllArchived(paseo, {
         deleteProviderSessions: config.deleteProviderSessions,
       });
       removed = purged.removed;
+      deletedAgents = purged.deletedAgents;
       deletedSessions = purged.deletedSessions;
     } else {
       removed = await removeEmptyWorkspaces(paseo, outcome.agents);
@@ -355,7 +362,7 @@ async function runCleanup(
       );
     }
   }
-  return { removed, deletedSessions, deletedOrphanSessions };
+  return { removed, deletedAgents, deletedSessions, deletedOrphanSessions };
 }
 
 /**

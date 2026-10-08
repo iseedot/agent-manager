@@ -92,15 +92,23 @@ function PurgeNow({ theme }: { theme: PluginSurfaceProps["theme"] }) {
     setError(null);
     try {
       const result = await runCleanup({});
-      const count = result.removed.length;
-      if (count === 0) {
-        setNote("No archived workspace to delete.");
+      const workspaces = result.removed.length;
+      const agents =
+        result.deletedAgents + result.removed.reduce((total, item) => total + item.agents, 0);
+      const sessions = result.deletedSessions;
+      if (workspaces === 0 && agents === 0) {
+        setNote("No archived workspace or agent to delete.");
       } else {
-        const sessions =
-          result.deletedSessions > 0
-            ? ` and ${result.deletedSessions} pi session file${result.deletedSessions === 1 ? "" : "s"}`
-            : "";
-        setNote(`Deleted ${count} archived workspace${count === 1 ? "" : "s"}${sessions}.`);
+        const parts: string[] = [];
+        if (workspaces > 0) {
+          parts.push(`${workspaces} archived workspace${workspaces === 1 ? "" : "s"}`);
+        }
+        if (agents > 0) {
+          parts.push(`${agents} archived agent${agents === 1 ? "" : "s"}`);
+        }
+        const detail =
+          sessions > 0 ? ` and ${sessions} pi session file${sessions === 1 ? "" : "s"}` : "";
+        setNote(`Deleted ${parts.join(" and ")}${detail}.`);
       }
     } catch (runError) {
       setError(runError instanceof Error ? runError.message : String(runError));
@@ -111,8 +119,8 @@ function PurgeNow({ theme }: { theme: PluginSurfaceProps["theme"] }) {
   return (
     <>
       <SettingsAction
-        label="Delete archived workspaces now"
-        hint="Runs the purge immediately: every archived workspace and its pi session file. Irreversible; ignores the cleanup interval."
+        label="Delete every archived workspace and agent now"
+        hint="Runs the purge immediately: every archived workspace and every archived agent, even one inside a workspace that is not archived, with its pi session file. Irreversible; ignores the cleanup interval."
         actionLabel={busy ? "Deleting…" : "Delete now"}
         disabled={busy}
         error={error}
