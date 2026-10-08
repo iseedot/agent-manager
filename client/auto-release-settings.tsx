@@ -1,6 +1,6 @@
 import { useCallback, useMemo, useState } from "react";
 import { Text } from "react-native";
-import { useSettings, type PluginSurfaceProps } from "@getpaseo/plugin/client";
+import { useRpc, useSettings, type PluginSurfaceProps } from "@getpaseo/plugin/client";
 import type { SettingsState } from "@getpaseo/plugin/client";
 import {
   SettingsAction,
@@ -11,6 +11,7 @@ import {
   SettingsSwitch,
 } from "@getpaseo/plugin/client/ui";
 
+import { runCleanupRpc } from "../shared/contracts";
 import { autoReleaseSettings } from "../shared/settings";
 
 type Ready = Extract<SettingsState<typeof autoReleaseSettings.schema>, { status: "ready" }>;
@@ -76,6 +77,52 @@ function Numbers({ settings, theme }: { settings: Ready; theme: PluginSurfacePro
   );
 }
 
+function PurgeNow({ theme }: { theme: PluginSurfaceProps["theme"] }) {
+  const runCleanup = useRpc(runCleanupRpc);
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const style = useMemo(() => ({ color: theme.colors.foregroundMuted }), [theme]);
+  const run = useCallback(async () => {
+    if (busy) {
+      return;
+    }
+    setBusy(true);
+    setNote(null);
+    setError(null);
+    try {
+      const result = await runCleanup({});
+      const count = result.removed.length;
+      if (count === 0) {
+        setNote("No archived workspace to delete.");
+      } else {
+        const sessions =
+          result.deletedSessions > 0
+            ? ` and ${result.deletedSessions} pi session file${result.deletedSessions === 1 ? "" : "s"}`
+            : "";
+        setNote(`Deleted ${count} archived workspace${count === 1 ? "" : "s"}${sessions}.`);
+      }
+    } catch (runError) {
+      setError(runError instanceof Error ? runError.message : String(runError));
+    } finally {
+      setBusy(false);
+    }
+  }, [busy, runCleanup]);
+  return (
+    <>
+      <SettingsAction
+        label="Delete archived workspaces now"
+        hint="Runs the purge immediately: every archived workspace and its pi session file. Irreversible; ignores the cleanup interval."
+        actionLabel={busy ? "Deleting…" : "Delete now"}
+        disabled={busy}
+        error={error}
+        onPress={() => void run()}
+      />
+      {note ? <Text style={style}>{note}</Text> : null}
+    </>
+  );
+}
+
 function Controls({ settings, theme }: { settings: Ready; theme: PluginSurfaceProps["theme"] }) {
   const style = useMemo(() => ({ color: theme.colors.foregroundMuted }), [theme]);
   const toggle = useCallback(
@@ -126,6 +173,9 @@ function Controls({ settings, theme }: { settings: Ready; theme: PluginSurfacePr
           disabled={settings.saving}
           onValueChange={(value) => toggle("deleteOrphanProviderSessions", value)}
         />
+      </SettingsCard>
+      <SettingsCard>
+        <PurgeNow theme={theme} />
       </SettingsCard>
       <Text style={style}>
         {purge

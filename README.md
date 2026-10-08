@@ -144,6 +144,7 @@ screen can change all of it; every value has a default and nothing has to be con
 | Purge archived workspaces | off | delete every archived workspace, sessions included |
 | Delete pi session files | off | also delete the pi transcript while purging |
 | Delete sessions Paseo does not know | off | delete provider transcripts with no Paseo agent record (pi only today) |
+| Delete archived workspaces now | — | button: run the purge immediately (every archived workspace plus its pi session file), without waiting for the cleanup interval |
 
 Values live in `~/.paseo/plugin-settings/agent-manager/auto-release.json` (`{ version, values }`, with the
 zod schema as the contract). An operator can override any of them from the daemon environment, and the

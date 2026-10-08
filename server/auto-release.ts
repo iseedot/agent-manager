@@ -313,7 +313,7 @@ async function cleanupWorkspaces(
   }
 }
 
-interface CleanupResult {
+export interface CleanupResult {
   removed: RemovedWorkspace[];
   deletedSessions: number;
   deletedOrphanSessions: number;
@@ -356,6 +356,31 @@ async function runCleanup(
     }
   }
   return { removed, deletedSessions, deletedOrphanSessions };
+}
+
+/**
+ * The settings screen's "delete now" action: run the purge immediately instead of waiting for the
+ * next tick's 24-hour window. It always purges every archived workspace with its provider (pi)
+ * session file, keeps the orphan switch as configured, and refuses to overlap a running tick.
+ */
+export async function runCleanupNow(): Promise<CleanupResult> {
+  if (running || cleaning) {
+    throw new Error("A sweep or cleanup is already running. Try again in a moment.");
+  }
+  const config = autoReleaseConfig();
+  const effective: AutoReleaseConfig = {
+    ...config,
+    purgeArchivedWorkspaces: true,
+    deleteProviderSessions: true,
+  };
+  const client = await getDaemonClient();
+  const agents = await listAllAgents((options) => client.fetchAgents(options as never));
+  cleaning = true;
+  try {
+    return await runCleanup({ released: [], skipped: 0, error: null, agents }, effective, "purge");
+  } finally {
+    cleaning = false;
+  }
 }
 
 /**
