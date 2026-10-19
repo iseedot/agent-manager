@@ -163,9 +163,12 @@ export function startAgentDirectory(client: PluginClientContext): () => void {
       return;
     }
     try {
+      // 0.12 hides background workspaces from public discovery unless the filter asks for them; a
+      // pill inside one would otherwise show "0 tabs". Older daemons ignore the extra key.
+      const listFilter = { includeArchived: true, includeBackground: true };
       const first = (await client.paseo.agents.list({
         subscribe: {},
-        filter: { includeArchived: true },
+        filter: listFilter,
         page: { limit: PAGE_LIMIT },
         signal: lifetime.signal,
       } as never)) as unknown as ListPage;
@@ -205,7 +208,7 @@ export function startAgentDirectory(client: PluginClientContext): () => void {
       let cursor = nextCursor(first.pageInfo);
       while (cursor) {
         const page = (await client.paseo.agents.list({
-          filter: { includeArchived: true },
+          filter: listFilter,
           page: { limit: PAGE_LIMIT, cursor },
           signal: lifetime.signal,
         } as never)) as unknown as ListPage;

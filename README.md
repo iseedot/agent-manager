@@ -28,9 +28,14 @@ because Paseo rejects a label that is empty or whitespace. Opening the pill show
 
 **New agent** fires Paseo's own new-agent action on desktop and web — the one behind the tab bar `+`
 menu and `Ctrl+Shift+A` / `Cmd+Shift+A` — so the usual draft tab opens. Native hosts have no keyboard
-layer, so it opens the same draft through Paseo's own `paseo:` deep link (`?open=draft:…`); the tab
-appears instantly and the session is created when the first message is sent. If the host cannot open
-that link either, it creates the session through the daemon and jumps to it.
+layer, so it opens the same draft through a Paseo deep link (`?open=draft:…`); the tab appears
+instantly and the session is created when the first message is sent. If the host cannot open that link
+either, it creates the session through the daemon and jumps to it.
+
+The deep link's scheme belongs to the build, not to the plugin: upstream Paseo registers `paseo`, and
+a fork that renames it (this repo targets one that registers `paseo-custom`, so it can sit beside the
+official app) has to list its scheme in `client/app-scheme.ts`. `openAppRoute` probes the list and
+opens the first scheme the host answers; `paseo` stays last as a fallback for unmodified builds.
 
 Switching tabs goes through a tiny redirect surface, because a composer pill has no navigation of its
 own. That surface subscribes to focus requests instead of reading one at mount, so a request that
@@ -39,6 +44,13 @@ arrives while it is already mounted — a second pick before the first navigatio
 One daemon observation backs the pill: the agent stream, opened when the plugin loads and kept for its
 lifetime, so a session that appears, is restored or is removed gains or loses its pill without a
 refetch and the tab counts and states stay current. Nothing is polled.
+
+Paseo 0.12 hides background workspaces — the ones `paseo run --no-wait` creates — from public agent
+discovery unless the filter asks for them. The directory and the timer both ask
+(`includeBackground: true`), so a pill opened inside a background workspace still lists its tabs and
+the sweep still sees those runtimes: no sidebar shows them, so on 0.12 they would otherwise never be
+released. A 0.11 daemon strips the unknown filter key and behaves exactly as before, so the plugin
+still requires only Paseo `>=0.11.0`; the background handling takes effect on 0.12 and later.
 
 ## Auto-release
 

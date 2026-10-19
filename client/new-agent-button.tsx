@@ -1,8 +1,8 @@
 import type { PluginButtonContentProps, PluginClientContext } from "@getpaseo/plugin/client";
-import { Linking } from "react-native";
 
 import { workspacesRpc } from "../shared/contracts";
 import { agentDirectoryStore, type DirectoryAgent } from "./agent-directory";
+import { openAppRoute } from "./app-scheme";
 import { WorkspacePillPanel } from "./composer-panel";
 
 const PILL_ID = "agent-workspace-pill";
@@ -304,28 +304,16 @@ async function openDraftDeepLink(client: PluginClientContext, workspaceId: strin
   if (typeof (globalThis as { document?: unknown }).document !== "undefined") {
     return false;
   }
-  const link = (Linking ?? {}) as {
-    canOpenURL?: (url: string) => Promise<boolean>;
-    openURL?: (url: string) => Promise<unknown>;
-  };
-  if (typeof link.openURL !== "function") {
-    return false;
-  }
   const serverId = await resolveServerId(client);
   if (!serverId) {
     return false;
   }
   const draftId = `draft-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
-  const url = `paseo:/h/${encodeURIComponent(serverId)}/workspace/${encodeURIComponent(workspaceId)}?open=${encodeURIComponent(`draft:${draftId}`)}`;
-  try {
-    if (typeof link.canOpenURL === "function" && !(await link.canOpenURL("paseo:"))) {
-      return false;
-    }
-    await link.openURL(url);
-    return true;
-  } catch {
-    return false;
-  }
+  // The scheme belongs to the build, not to the plugin: a fork renames it. `openAppRoute` resolves
+  // the one this app registers.
+  return openAppRoute(
+    `/h/${encodeURIComponent(serverId)}/workspace/${encodeURIComponent(workspaceId)}?open=${encodeURIComponent(`draft:${draftId}`)}`,
+  );
 }
 
 function text(value: unknown): string | null {

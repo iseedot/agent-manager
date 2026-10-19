@@ -12,7 +12,8 @@ export interface DaemonSessionClient {
   connect(): Promise<void>;
   close(): Promise<void>;
   fetchAgents(options?: {
-    filter?: { includeArchived?: boolean };
+    filter?: { includeArchived?: boolean; includeBackground?: boolean };
+    sort?: Array<{ key: string; direction: string }>;
     page?: { limit?: number; cursor?: string };
   }): Promise<{ entries?: unknown }>;
   getDaemonStatus(options?: unknown): Promise<{ serverId?: unknown }>;

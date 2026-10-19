@@ -60,7 +60,9 @@ export async function listAllAgents(
   let cursor: string | undefined;
   for (let page = 0; page < MAX_PAGES; page += 1) {
     const result = await list({
-      filter: { includeArchived: options.includeArchived ?? true },
+      // 0.12 leaves background workspaces out of public discovery unless asked. The sweep has to see
+      // them: their runtimes are the ones no sidebar shows, so they would otherwise never be released.
+      filter: { includeArchived: options.includeArchived ?? true, includeBackground: true },
       sort: [{ key: "updated_at", direction: "desc" }],
       page: cursor ? { limit: PAGE_SIZE, cursor } : { limit: PAGE_SIZE },
     });

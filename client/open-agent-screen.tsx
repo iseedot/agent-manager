@@ -1,8 +1,9 @@
 import type { PluginScreenProps } from "@getpaseo/plugin/client";
 import { usePaseo } from "@getpaseo/plugin/client";
 import { useEffect, useState } from "react";
-import { ActivityIndicator, Linking, Text, View } from "react-native";
+import { ActivityIndicator, Text, View } from "react-native";
 
+import { openAppRoute } from "./app-scheme";
 import { resolveNewAgentConfig, type AgentConfig } from "./new-agent-button";
 
 const NAVIGATE_RETRY_MS = [400, 1200, 2400];
@@ -132,19 +133,6 @@ function createSession(
 }
 
 async function openDeepLink(serverId: string, agentId: string): Promise<void> {
-  const link = (Linking ?? {}) as {
-    canOpenURL?: (url: string) => Promise<boolean>;
-    openURL?: (url: string) => Promise<unknown>;
-  };
-  if (typeof link.openURL !== "function") {
-    return;
-  }
-  try {
-    if (typeof link.canOpenURL === "function" && !(await link.canOpenURL("paseo:"))) {
-      return;
-    }
-    await link.openURL(`paseo:/h/${encodeURIComponent(serverId)}/agent/${encodeURIComponent(agentId)}`);
-  } catch {
-    return;
-  }
+  // The build owns the scheme (a fork renames it); `openAppRoute` resolves the one it registers.
+  await openAppRoute(`/h/${encodeURIComponent(serverId)}/agent/${encodeURIComponent(agentId)}`);
 }
