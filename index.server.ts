@@ -1,12 +1,12 @@
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 
-import { runCleanupRpc, workspacesRpc } from "./shared/contracts";
+import { runCleanupRpc } from "./shared/contracts";
 import {
   runPrivacyCleanup,
   scheduleReleaseAfterTurn,
   startAutoReleaseScheduler,
 } from "./server/auto-release";
-import { disposeDaemonClient, resolveServerId } from "./server/daemon-client";
+import { disposeDaemonClient } from "./server/daemon-client";
 import { installCrashGuards } from "./server/guard";
 import { autoReleaseConfig } from "./server/settings";
 import { registerAutoReleaseSettings } from "./server/settings";
@@ -15,7 +15,6 @@ export default function contribute(server: PluginServerContext) {
   const removeCrashGuards = installCrashGuards();
   const removeAutoReleaseSettings = registerAutoReleaseSettings(server);
 
-  server.handle(workspacesRpc, async () => ({ serverId: await resolveServerId() }));
   server.handle(runCleanupRpc, async () => runPrivacyCleanup());
 
   const stopAutoRelease = startAutoReleaseScheduler();

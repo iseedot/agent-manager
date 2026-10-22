@@ -1,56 +1,24 @@
 # paseo-agent-manager
 
-A Paseo plugin with two jobs:
+A Paseo plugin with one job: **Auto-release**. Agent runtimes are released once their turn is over,
+whether or not the app is open: one 15-minute tick releases everything that is not working or waiting
+on you and, once a day, deletes the archived workspaces and agents the settings name (see
+[Auto-release](#auto-release)).
 
-1. **Composer pill** — one pill above the composer, titled `Tabs`, that shows
-   the open tabs of that workspace and lets you switch, close or open one.
-2. **Auto-release** — agent runtimes are released once their turn is over, whether or not the app is
-   open: one 15-minute tick releases everything that is not working or waiting on you and, once a
-   day, deletes the archived workspaces and agents the settings name (see [Auto-release](#auto-release)).
+The only client contribution is the **Auto-release settings screen** (Settings → Plugins →
+agent-manager). The composer pill and its tab list were removed, so there is no tab count, no tab
+switching and no new-agent shortcut. The manager panel and every workspace-isolation behaviour are
+gone too: the plugin never creates, moves or removes a checkout, never reads project git state and
+does not collect host metrics. It only runs the timer.
 
-The manager panel is gone, and so is every workspace-isolation behaviour: the plugin never creates,
-moves or removes a checkout, never reads project git state and no longer collects host metrics. It only
-watches the daemon's session stream and runs the timer.
-
-## The composer pill
-
-One pill sits above the composer and follows the session it belongs to. Its **title is the fixed
-`Tabs`** and its label carries the open tab count (`3 tabs`, or `Tabs` when the workspace has none),
-because Paseo rejects a label that is empty or whitespace. Opening the pill shows:
-
-- every open tab of this workspace, newest first, each with its state — `running`, `unread` (the turn
-  finished and has not been looked at), `needs input` (waiting on a permission), `failed`, `idle` (a
-  runtime is held but nothing is working) or `no runtime` — and a `×` that archives that tab without
-  switching to it first, the current tab included. The current tab is highlighted and inert; picking
-  another focuses it through the same navigation the app uses, so it switches workspace and tab,
-- `New Agent`,
-- the `ui <code>` build stamp.
-
-**New agent** fires Paseo's own new-agent action on desktop and web — the one behind the tab bar `+`
-menu and `Ctrl+Shift+A` / `Cmd+Shift+A` — so the usual draft tab opens. Native hosts have no keyboard
-layer, so it opens the same draft through a Paseo deep link (`?open=draft:…`); the tab appears
-instantly and the session is created when the first message is sent. If the host cannot open that link
-either, it creates the session through the daemon and jumps to it.
-
-The deep link's scheme belongs to the build, not to the plugin: upstream Paseo registers `paseo`, and
-a fork that renames it (this repo targets one that registers `paseo-custom`, so it can sit beside the
-official app) has to list its scheme in `client/app-scheme.ts`. `openAppRoute` probes the list and
-opens the first scheme the host answers; `paseo` stays last as a fallback for unmodified builds.
-
-Switching tabs goes through a tiny redirect surface, because a composer pill has no navigation of its
-own. That surface subscribes to focus requests instead of reading one at mount, so a request that
-arrives while it is already mounted — a second pick before the first navigation lands — still switches.
-
-One daemon observation backs the pill: the agent stream, opened when the plugin loads and kept for its
-lifetime, so a session that appears, is restored or is removed gains or loses its pill without a
-refetch and the tab counts and states stay current. Nothing is polled.
+## Background workspaces
 
 Paseo 0.12 hides background workspaces — the ones `paseo run --no-wait` creates — from public agent
-discovery unless the filter asks for them. The directory and the timer both ask
-(`includeBackground: true`), so a pill opened inside a background workspace still lists its tabs and
-the sweep still sees those runtimes: no sidebar shows them, so on 0.12 they would otherwise never be
-released. A 0.11 daemon strips the unknown filter key and behaves exactly as before, so the plugin
-still requires only Paseo `>=0.11.0`; the background handling takes effect on 0.12 and later.
+discovery unless the filter asks for them. The timer asks (`includeBackground: true`), so the sweep
+still sees those runtimes: no sidebar shows them, so on 0.12 they would otherwise never be released.
+The timer uses the daemon's own client, which on a 0.11 host strips the unknown filter key and
+behaves exactly as before, so the plugin still requires only Paseo `>=0.11.0`; the background
+handling takes effect on 0.12 and later.
 
 ## Auto-release
 
@@ -222,10 +190,11 @@ paseo plugin update agent-manager --yes     # later
 ```
 
 `"pluginsEnabled": true` in the daemon `config.json`, then `paseo reload`. Install once per daemon;
-every client connected to that host (including the official iOS app) gets the pill.
+the settings screen appears on every client connected to that host.
 
-Needs Paseo 0.11.0+ (screens and `execCommand`). Nothing extra is installed: the plugin uses the daemon's own client, the session
-protocol on `ws://<daemon.listen>/ws` and the `paseo` CLI for hard deletes.
+Needs Paseo 0.11.0+ (settings screens and `execCommand`). Nothing extra is installed: the plugin uses
+the daemon's own client, the session protocol on `ws://<daemon.listen>/ws` and the `paseo` CLI for
+hard deletes.
 
 ## Logs
 
@@ -244,14 +213,12 @@ instead). The tick writes a line when it actually did something:
 
 Failures keep their own `agent-manager …` lines. Everything else, silence.
 
-## Checking which build a client runs
+## Client code
 
-A client only picks up plugin code when it fetches the catalog — at connect, or when the daemon
-announces `plugin_catalog_changed` after an install, a reload or an update. A phone that was asleep or
-offline during the change keeps running the bundle it already has until it reconnects.
-
-The bottom of the pill popover shows a `ui <code>` stamp derived from the client code that is actually
-executing, so a stale client is easy to spot: compare it with the code the current source produces.
+The settings screen is the only client-side contribution. A client only picks up plugin code when it
+fetches the catalog — at connect, or when the daemon announces `plugin_catalog_changed` after an
+install, a reload or an update. A phone that was asleep or offline during the change keeps running the
+bundle it already has until it reconnects.
 
 ## Development
 
@@ -262,7 +229,7 @@ npm run typecheck
 
 The plugin runs from source: point the daemon at this directory and reload it (`paseo plugin install
 <path>`, then `paseo reload`). `index.client.tsx` and `index.server.ts` are the two halves Paseo
-compiles; `shared/contracts.ts` is the RPC surface between them (one call: the host id for native
-draft deep links).
+compiles; `shared/contracts.ts` is the RPC surface between them (one call: the privacy-cleanup
+button).
 
 MIT

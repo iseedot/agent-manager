@@ -16,27 +16,6 @@ export interface DaemonSessionClient {
     sort?: Array<{ key: string; direction: string }>;
     page?: { limit?: number; cursor?: string };
   }): Promise<{ entries?: unknown }>;
-  getDaemonStatus(options?: unknown): Promise<{ serverId?: unknown }>;
-}
-
-let cachedServerId: string | null = null;
-
-export async function resolveServerId(): Promise<string | null> {
-  if (cachedServerId) {
-    return cachedServerId;
-  }
-  try {
-    const client = await getDaemonClient();
-    const status = await client.getDaemonStatus();
-    const serverId = typeof status?.serverId === "string" ? status.serverId.trim() : "";
-    if (serverId) {
-      cachedServerId = serverId;
-      return serverId;
-    }
-  } catch {
-    return null;
-  }
-  return null;
 }
 
 interface DaemonClientConstructor {
