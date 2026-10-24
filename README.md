@@ -168,6 +168,13 @@ value that is not a positive number is ignored:
 | `PASEO_AGENT_MANAGER_DELETE_ARCHIVED_AGENTS` | `1`/`0` — delete archived agents |
 | `PASEO_AGENT_MANAGER_PURGE_ARCHIVED` | `1`/`0` — legacy alias: sets both archived switches |
 
+### Languages
+
+The settings screen ships English and Simplified Chinese resources in `client/locales/`. On Paseo
+0.13+ the labels follow the app language; on 0.11/0.12 hosts, where the translation API does not
+exist, the client bundle falls back to English instead of failing to load. The manifest also carries
+a `zh-CN` name and description for the plugin registry; Paseo itself does not read that field.
+
 ### Earlier profiles
 
 Two earlier designs are kept as tags, not branches, because both are ancestors of this code: a host
@@ -192,9 +199,10 @@ paseo plugin update agent-manager --yes     # later
 `"pluginsEnabled": true` in the daemon `config.json`, then `paseo reload`. Install once per daemon;
 the settings screen appears on every client connected to that host.
 
-Needs Paseo 0.11.0+ (settings screens and `execCommand`). Nothing extra is installed: the plugin uses
-the daemon's own client, the session protocol on `ws://<daemon.listen>/ws` and the `paseo` CLI for
-hard deletes.
+Needs Paseo 0.11.0+ (settings screens and `execCommand`). Runtime translations use the 0.13 API
+when the host has it and fall back to English on older hosts, so the minimum stays 0.11.0. Nothing
+extra is installed: the plugin uses the daemon's own client, the session protocol on
+`ws://<daemon.listen>/ws` and the `paseo` CLI for hard deletes.
 
 ## Logs
 
@@ -215,10 +223,11 @@ Failures keep their own `agent-manager …` lines. Everything else, silence.
 
 ## Client code
 
-The settings screen is the only client-side contribution. A client only picks up plugin code when it
-fetches the catalog — at connect, or when the daemon announces `plugin_catalog_changed` after an
-install, a reload or an update. A phone that was asleep or offline during the change keeps running the
-bundle it already has until it reconnects.
+The settings screen is the only client-side contribution; its labels follow the app language on
+Paseo 0.13+ and stay English on older hosts. A client only picks up plugin code when it fetches the
+catalog — at connect, or when the daemon announces `plugin_catalog_changed` after an install, a
+reload or an update. A phone that was asleep or offline during the change keeps running the bundle it
+already has until it reconnects.
 
 ## Development
 

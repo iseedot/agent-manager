@@ -13,29 +13,30 @@ import {
 
 import { runCleanupRpc } from "../shared/contracts";
 import { autoReleaseSettings } from "../shared/settings";
+import { useMessages, type Translate } from "./messages";
 
 type Ready = Extract<SettingsState<typeof autoReleaseSettings.schema>, { status: "ready" }>;
 type Values = Ready["values"];
 
 const NUMBER_FIELDS: Array<{
   key: "sweepIntervalMinutes" | "graceMinutes" | "cleanupIntervalHours";
-  label: string;
-  hint: string;
+  labelKey: string;
+  hintKey: string;
 }> = [
   {
     key: "sweepIntervalMinutes",
-    label: "Tick every (minutes)",
-    hint: "Releases runtimes and runs the cleanup.",
+    labelKey: "tickLabel",
+    hintKey: "tickHint",
   },
   {
     key: "graceMinutes",
-    label: "Grace (minutes)",
-    hint: "Skip runtimes touched this recently. 0 releases on the tick.",
+    labelKey: "graceLabel",
+    hintKey: "graceHint",
   },
   {
     key: "cleanupIntervalHours",
-    label: "Cleanup every (hours)",
-    hint: "How often the cleanup may run.",
+    labelKey: "cleanupLabel",
+    hintKey: "cleanupHint",
   },
 ];
 
@@ -46,6 +47,7 @@ function parseNumber(text: string, fallback: number): number {
 
 /** The three numbers are one document: edited together and saved against the displayed revision. */
 function Numbers({ settings, theme }: { settings: Ready; theme: PluginSurfaceProps["theme"] }) {
+  const { t } = useMessages();
   const [draft, setDraft] = useState<Values>(() => settings.values);
   const change = useCallback((key: keyof Values, text: string) => {
     setDraft((current) => ({ ...current, [key]: parseNumber(text, current[key] as number) }));
@@ -59,16 +61,16 @@ function Numbers({ settings, theme }: { settings: Ready; theme: PluginSurfacePro
       {NUMBER_FIELDS.map((field) => (
         <SettingsInput
           key={field.key}
-          label={field.label}
-          hint={field.hint}
+          label={t(field.labelKey)}
+          hint={t(field.hintKey)}
           initialValue={String(draft[field.key])}
           disabled={settings.saving}
           onChangeText={(text) => change(field.key, text)}
         />
       ))}
       <SettingsAction
-        label="Intervals"
-        actionLabel="Save intervals"
+        label={t("intervals")}
+        actionLabel={t("saveIntervals")}
         disabled={settings.saving}
         onPress={save}
       />
@@ -77,34 +79,37 @@ function Numbers({ settings, theme }: { settings: Ready; theme: PluginSurfacePro
   );
 }
 
-function describeResult(result: {
-  removed: Array<{ agents: number }>;
-  deletedAgents: number;
-  deletedSessions: number;
-  deletedProjects: number;
-  deletedOrphanSessions: number;
-}): string {
+function describeResult(
+  result: {
+    removed: Array<{ agents: number }>;
+    deletedAgents: number;
+    deletedSessions: number;
+    deletedProjects: number;
+    deletedOrphanSessions: number;
+  },
+  t: Translate,
+): string {
   const workspaces = result.removed.length;
   const agents = result.deletedAgents + result.removed.reduce((total, item) => total + item.agents, 0);
   const projects = result.deletedProjects;
   const sessions = result.deletedSessions + result.deletedOrphanSessions;
   if (workspaces === 0 && agents === 0 && projects === 0 && sessions === 0) {
-    return "Nothing archived to delete.";
+    return t("nothingArchived");
   }
   const parts: string[] = [];
   if (workspaces > 0) {
-    parts.push(`${workspaces} archived workspace${workspaces === 1 ? "" : "s"}`);
+    parts.push(t("workspaces", { count: workspaces }));
   }
   if (agents > 0) {
-    parts.push(`${agents} archived agent${agents === 1 ? "" : "s"}`);
+    parts.push(t("agents", { count: agents }));
   }
   if (projects > 0) {
-    parts.push(`${projects} archived project${projects === 1 ? "" : "s"}`);
+    parts.push(t("projects", { count: projects }));
   }
   if (sessions > 0) {
-    parts.push(`${sessions} pi session file${sessions === 1 ? "" : "s"}`);
+    parts.push(t("sessions", { count: sessions }));
   }
-  return `Deleted ${parts.join(", ")}.`;
+  return t("deleted", { items: parts.join(t("separator")) });
 }
 
 /**
@@ -112,6 +117,7 @@ function describeResult(result: {
  * it purges every archived thing at once, without a second confirmation.
  */
 function PrivacyCleanup({ theme }: { theme: PluginSurfaceProps["theme"] }) {
+  const { t } = useMessages();
   const runCleanup = useRpc(runCleanupRpc);
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState<string | null>(null);
@@ -125,13 +131,13 @@ function PrivacyCleanup({ theme }: { theme: PluginSurfaceProps["theme"] }) {
     setNote(null);
     setError(null);
     try {
-      setNote(describeResult(await runCleanup({})));
+      setNote(describeResult(await runCleanup({}), t));
     } catch (runError) {
       setError(runError instanceof Error ? runError.message : String(runError));
     } finally {
       setBusy(false);
     }
-  }, [busy, runCleanup]);
+  }, [busy, runCleanup, t]);
   return (
     <View style={{ gap: 6 }}>
       <Pressable
@@ -148,13 +154,10 @@ function PrivacyCleanup({ theme }: { theme: PluginSurfaceProps["theme"] }) {
         })}
       >
         <Text style={{ color: "#fff", fontWeight: "700" }}>
-          {busy ? "Cleaning up…" : "Privacy cleanup"}
+          {busy ? t("privacyCleaningUp") : t("privacyCleanup")}
         </Text>
       </Pressable>
-      <Text style={style}>
-        Delete every archived workspace, agent and project now, plus orphan pi sessions while pi
-        session files are on. Irreversible.
-      </Text>
+      <Text style={style}>{t("privacyDescription")}</Text>
       {note ? <Text style={style}>{note}</Text> : null}
       {error ? <Text style={{ color: theme.colors.statusDanger }}>{error}</Text> : null}
     </View>
@@ -162,6 +165,7 @@ function PrivacyCleanup({ theme }: { theme: PluginSurfaceProps["theme"] }) {
 }
 
 function Controls({ settings, theme }: { settings: Ready; theme: PluginSurfaceProps["theme"] }) {
+  const { t } = useMessages();
   const style = useMemo(() => ({ color: theme.colors.foregroundMuted }), [theme]);
   const toggle = useCallback(
     (
@@ -181,32 +185,32 @@ function Controls({ settings, theme }: { settings: Ready; theme: PluginSurfacePr
   const workspaces = settings.values.deleteArchivedWorkspaces;
   const agents = settings.values.deleteArchivedAgents;
   return (
-    <SettingsSection title="Auto-release">
+    <SettingsSection title={t("title")}>
       <SettingsCard>
         <SettingsSwitch
-          label="Auto-release"
-          hint="Run the timer. Off stops release and the automatic cleanup; the button below still works."
+          label={t("autoRelease")}
+          hint={t("autoReleaseHint")}
           value={enabled}
           disabled={settings.saving}
           onValueChange={(value) => toggle("enabled", value)}
         />
         <SettingsSwitch
-          label="Delete pi session files"
-          hint="Also delete pi transcripts when deleting agents. Off deletes Paseo records only."
+          label={t("deletePi")}
+          hint={t("deletePiHint")}
           value={sessions}
           disabled={settings.saving}
           onValueChange={(value) => toggle("deleteProviderSessions", value)}
         />
         <SettingsSwitch
-          label="Delete archived workspaces"
-          hint="Delete every archived workspace, with the agents inside it."
+          label={t("deleteWorkspaces")}
+          hint={t("deleteWorkspacesHint")}
           value={workspaces}
           disabled={settings.saving}
           onValueChange={(value) => toggle("deleteArchivedWorkspaces", value)}
         />
         <SettingsSwitch
-          label="Delete archived agents"
-          hint="Delete every archived agent, even in a workspace that is not archived."
+          label={t("deleteAgentsLabel")}
+          hint={t("deleteAgentsHint")}
           value={agents}
           disabled={settings.saving}
           onValueChange={(value) => toggle("deleteArchivedAgents", value)}
@@ -216,9 +220,7 @@ function Controls({ settings, theme }: { settings: Ready; theme: PluginSurfacePr
         <PrivacyCleanup theme={theme} />
       </SettingsCard>
       <Text style={style}>
-        {workspaces || agents
-          ? "Archived items are deleted at the next cleanup. Cannot be undone."
-          : "Nothing archived is deleted automatically."}
+        {workspaces || agents ? t("archivedWillDelete") : t("archivedKept")}
       </Text>
       <Numbers key={settings.revision} settings={settings} theme={theme} />
     </SettingsSection>
@@ -226,24 +228,33 @@ function Controls({ settings, theme }: { settings: Ready; theme: PluginSurfacePr
 }
 
 export function AutoReleaseSettingsScreen({ theme }: PluginSurfaceProps) {
+  const { t } = useMessages();
   const settings = useSettings(autoReleaseSettings);
   const style = useMemo(() => ({ color: theme.colors.foreground }), [theme]);
   if (settings.status === "loading") {
     return (
-      <SettingsSection title="Auto-release">
-        <Text style={style}>Loading settings…</Text>
+      <SettingsSection title={t("title")}>
+        <Text style={style}>{t("loading")}</Text>
       </SettingsSection>
     );
   }
   if (settings.status !== "ready") {
     return (
-      <SettingsSection title="Auto-release">
-        <SettingsRow label="Settings">
+      <SettingsSection title={t("title")}>
+        <SettingsRow label={t("settingsLabel")}>
           <Text style={style}>{settings.error}</Text>
         </SettingsRow>
-        <SettingsAction label="Read the settings again" actionLabel="Reload" onPress={settings.reload} />
+        <SettingsAction
+          label={t("readAgain")}
+          actionLabel={t("reload")}
+          onPress={settings.reload}
+        />
         {settings.status === "invalid" ? (
-          <SettingsAction label="Restore the defaults" actionLabel="Reset" onPress={settings.reset} />
+          <SettingsAction
+            label={t("restoreDefaults")}
+            actionLabel={t("reset")}
+            onPress={settings.reset}
+          />
         ) : null}
       </SettingsSection>
     );

@@ -1,5 +1,13 @@
 {
   "id": "agent-manager",
+  "name": "Agent Manager",
+  "description": "Releases idle agent runtimes and purges archived workspaces, agents, and orphan provider sessions.",
+  "translations": {
+    "zh-CN": {
+      "name": "Agent 管理器",
+      "description": "自动释放空闲 agent runtime，清理归档工作区、agent 与孤立的 provider 会话。"
+    }
+  },
   "requirements": {
     "paseo": ">=0.11.0"
   }
