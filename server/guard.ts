@@ -1,11 +1,16 @@
-import { describe, serializeWrite, writeJsonAtomic } from "./util";
 import { join } from "node:path";
-import { paseoHome } from "./daemon-mcp";
+
+import { paseoHome } from "./daemon";
+import { describe, serializeWrite, writeJsonAtomic } from "./util";
 
 const CRASH_PATH = "agent-manager/last-crash.json";
 
 let installed = false;
 
+/**
+ * A plugin must never die silently: an unhandled rejection or exception is logged to the plugin log
+ * and remembered in `last-crash.json` so there is something to read after the fact.
+ */
 export function installCrashGuards(): () => void {
   if (installed) {
     return () => {};
@@ -13,11 +18,16 @@ export function installCrashGuards(): () => void {
   installed = true;
 
   const report = (kind: string, error: unknown) => {
-    const payload = { kind, at: new Date().toISOString(), error: describe(error) };
-    console.log(`agent-manager ${kind}: ${payload.error}`);
-    void serializeWrite(() => writeJsonAtomic(join(paseoHome(), CRASH_PATH), payload)).catch(() => undefined);
+    const message = describe(error);
+    console.log(`agent-manager ${kind}: ${message}`);
+    void serializeWrite(() =>
+      writeJsonAtomic(join(paseoHome(), CRASH_PATH), {
+        kind,
+        at: new Date().toISOString(),
+        error: message,
+      }),
+    ).catch(() => undefined);
   };
-
   const onRejection = (reason: unknown) => report("unhandled rejection", reason);
   const onException = (error: unknown) => report("uncaught exception", error);
 
@@ -29,10 +39,4 @@ export function installCrashGuards(): () => void {
     process.off("uncaughtException", onException);
     installed = false;
   };
-}
-
-export function fireAndForget(work: Promise<unknown>, label: string): void {
-  void work.catch((error) => {
-    console.log(`agent-manager ${label} failed: ${describe(error)}`);
-  });
 }

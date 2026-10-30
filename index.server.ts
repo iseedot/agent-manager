@@ -1,38 +1,24 @@
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 
 import { runCleanupRpc } from "./shared/contracts";
-import {
-  runPrivacyCleanup,
-  scheduleReleaseAfterTurn,
-  startAutoReleaseScheduler,
-} from "./server/auto-release";
-import { disposeDaemonClient } from "./server/daemon-client";
+import { runPrivacyCleanup, rescheduleAutoCleanup, startAutoCleanup } from "./server/cleanup";
+import { disposeDaemonClient } from "./server/daemon";
 import { installCrashGuards } from "./server/guard";
-import { autoReleaseConfig } from "./server/settings";
-import { registerAutoReleaseSettings } from "./server/settings";
+import { registerAutoCleanupSettings } from "./server/settings";
 
 export default function contribute(server: PluginServerContext) {
   const removeCrashGuards = installCrashGuards();
-  const removeAutoReleaseSettings = registerAutoReleaseSettings(server);
+  // Settings before the timer: the first run waits for the stored document, and every later change
+  // re-arms the timer so a flipped switch takes effect immediately.
+  const removeAutoCleanupSettings = registerAutoCleanupSettings(server, rescheduleAutoCleanup);
 
   server.handle(runCleanupRpc, async () => runPrivacyCleanup());
 
-  const stopAutoRelease = startAutoReleaseScheduler();
-
-  // 0.11 lifecycle hook: release a runtime right after its turn ends plus the grace window, rather
-  // than waiting for the next tick. The timer stays as the safety net for already-idle runtimes.
-  const removeTurnEnded = server.on("agent.turn_ended", (event) => {
-    const config = autoReleaseConfig();
-    if (!config.enabled) {
-      return;
-    }
-    scheduleReleaseAfterTurn(event.agent.id, config.graceMs);
-  });
+  const stopAutoCleanup = startAutoCleanup();
 
   return () => {
-    removeTurnEnded();
-    stopAutoRelease();
-    removeAutoReleaseSettings();
+    stopAutoCleanup();
+    removeAutoCleanupSettings();
     removeCrashGuards();
     void disposeDaemonClient();
   };

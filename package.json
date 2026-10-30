@@ -1,7 +1,7 @@
 {
   "name": "paseo-plugin-agent-manager",
   "version": "0.6.1",
-  "description": "Paseo plugin: automatic release of idle agent runtimes, purging of archived workspaces and agents, and orphan provider-session cleanup.",
+  "description": "Paseo plugin: a daily timer that deletes archived workspaces, agents and projects, plus orphan provider-session cleanup.",
   "license": "MIT",
   "keywords": [
     "paseo",

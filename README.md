@@ -1,59 +1,63 @@
 # paseo-agent-manager
 
-A Paseo plugin with one job: **Auto-release**. Agent runtimes are released once their turn is over,
-whether or not the app is open: one 15-minute tick releases everything that is not working or waiting
-on you and, once a day, deletes the archived workspaces and agents the settings name (see
-[Auto-release](#auto-release)).
+A Paseo plugin with one job: **Auto-cleanup**. Archived workspaces, agents and projects are deleted
+on a daily timer, whether or not the app is open, and orphan pi session files are swept with them
+(see [Auto-cleanup](#auto-cleanup)).
 
-The only client contribution is the **Auto-release settings screen** (Settings → Plugins →
-agent-manager). The composer pill and its tab list were removed, so there is no tab count, no tab
-switching and no new-agent shortcut. The manager panel and every workspace-isolation behaviour are
-gone too: the plugin never creates, moves or removes a checkout, never reads project git state and
-does not collect host metrics. It only runs the timer.
+The only client contribution is the **Auto-cleanup settings screen** (Settings → Plugins →
+agent-manager): the switches, the schedule and one destructive button. The composer pill, the tab
+list and the manager panel are gone, and so is workspace isolation: the plugin never creates, moves
+or removes a checkout, never reads project git state and does not collect host metrics.
+
+## Why there is no runtime release here
+
+Releasing idle agent runtimes was this plugin's other job, from a 15-minute sweep down to an
+event-driven release after each turn. Paseo now does that itself: from 0.14 on, the daemon releases a
+resumable runtime after an idle hour when its own work guards and the provider's `canStopRuntime()`
+check agree, configured per host with **Settings → host → Agents → Release idle agents** (or
+`agents.idleRuntimeCleanup`). That path also sees what a plugin cannot — in-flight turns, provider
+background tasks, ACP terminals, subagent families and pending finish notifications — so the plugin's
+release half was removed rather than kept as a weaker duplicate. Anything that still runs 0.13 or
+older keeps its runtimes until the app or the daemon restarts; nothing in this plugin will release
+them.
+
+Deleting records is the part Paseo does not do, so that is all this plugin does now.
+
+## Auto-cleanup
+
+The whole timer has a master switch in the plugin settings — **Auto-cleanup**, on by default. Turn it
+off and the timer stops entirely: nothing is deleted automatically, and only the **Privacy cleanup**
+button deletes.
+
+**One timer, one job, no polling.** It is armed for the exact moment the cleanup is due — the
+**cleanup interval** (`24` hours by default) after the last run — and re-arms itself afterwards. It
+runs earlier when
+
+1. any of the three delete switches changed since the last run, so turning a switch on does not wait
+   out a day, or
+2. no cleanup has ever run on this host.
+
+A settings change re-arms the timer on the spot instead of being noticed at the next wake-up. The
+delay is re-derived from the clock on every wake-up, so a reload, a clock jump or a long sleep cannot
+postpone the cleanup indefinitely: the timestamp of the last run lives in
+`~/.paseo/agent-manager/auto-cleanup.json` and the first wake-up after load compares against it.
+
+Nothing else wakes up: no per-session timer, no per-agent timer, no extra timer for the passes a
+cleanup runs. A run that is still going when a settings change arrives is not interrupted; the timer
+re-arms once it finishes, so slow work can never run twice. A failed pass is not recorded as done: it
+stays due and retries an hour later with its error in the state file. The plugin's own daemon
+connection is opened lazily and kept for the lifetime of the plugin (closed on unload).
+
+When it runs, the two archived-item switches decide what goes — see
+[Deleting archived workspaces and agents](#deleting-archived-workspaces-and-agents).
 
 ## Background workspaces
 
 Paseo 0.12 hides background workspaces — the ones `paseo run --no-wait` creates — from public agent
-discovery unless the filter asks for them. The timer asks (`includeBackground: true`), so the sweep
-still sees those runtimes: no sidebar shows them, so on 0.12 they would otherwise never be released.
-The timer uses the daemon's own client, which on a 0.11 host strips the unknown filter key and
-behaves exactly as before, so the plugin still requires only Paseo `>=0.11.0`; the background
-handling takes effect on 0.12 and later.
-
-## Auto-release
-
-The whole timer has a master switch in the plugin settings — **Auto-release**, on by default. Turn it
-off and the timer stops entirely: no runtime is released, neither on the tick nor when a turn ends,
-and no automatic cleanup runs. The settings screen's **Privacy cleanup** button still works.
-
-**One timer.** A tick every fifteen minutes does both jobs, and it keeps working while the app is
-closed:
-
-1. **Release.** The daemon's session list is read once and every runtime that is neither working nor
-   waiting on the user is released. There is no idle window any more — the tick is the resolution, so a
-   runtime lives at most one tick past its last turn. Three protections remain: a runtime that is
-   `running`, one that is still `initializing` (a slow provider boot must not be killed half-way) and
-   one waiting on a permission (`attentionReason: permission` or a pending permission request) are never
-   released, and a runtime the daemon touched inside the **grace window** (five minutes) is left for the
-   next tick, so a turn that ends just before a tick is not released while its answer is still being
-   read.
-2. **Cleanup, once a day.** The two delete switches decide what goes — see
-   [Deleting archived workspaces and agents](#deleting-archived-workspaces-and-agents).
-   **Delete archived workspaces** removes every archived workspace with the agents inside it;
-   **Delete archived agents** removes every archived agent whose workspace is not archived. Nothing
-   depends on it being prompt, so it rides on the tick but at most every twenty-four hours. The
-   timestamp lives in the state file, so a reload cannot postpone it forever, and the session list the
-   release pass already read is reused instead of listing twice. When that listing failed the phase is
-   skipped entirely.
-
-Nothing else wakes up: no per-session timer, no due timer, and no second timer for the phases a tick
-triggers. A phase that is still running when the next tick arrives is skipped by its own flag, so slow
-work can never run twice and can never hold the release pass back. The plugin's own daemon connection is
-opened lazily and kept for the lifetime of the plugin (closed on unload), and only the last tick is
-remembered in `~/.paseo/agent-manager/auto-release.json`.
-
-Releasing goes through the daemon's own close action (MCP `kill_agent`), so the record stays valid and
-the next message resumes the session.
+discovery unless the filter asks for them. The listing asks (`includeBackground: true`), so an
+archived agent behind a workspace no sidebar shows is still cleaned up. The plugin uses the daemon's
+own client, which on a 0.11 host strips the unknown filter key and behaves exactly as before, so the
+plugin still requires only Paseo `>=0.11.0`.
 
 ## Deleting archived workspaces and agents
 
@@ -117,51 +121,50 @@ This is irreversible and can delete a session you were still using outside Paseo
 
 ### Provider sessions are not coupled
 
-The two session-deleting paths never hard-code a provider in the cleanup code:
+`server/pi-sessions.ts` holds everything pi-specific: how a transcript is recognised, where pi stores
+sessions, and how they are enumerated. The cleanup calls exactly two functions from it —
+`deleteAgentTranscripts(agents)` and `sweepOrphanSessions()` — and never mentions a provider itself.
+Adding one means teaching those two functions about it; nothing else in the plugin changes.
 
-- `server/provider-sessions.ts` is the dispatcher. It reads each agent's `persistence`, then routes
-  through a `switch (provider)` — one `case` per provider — for both "delete the session behind this
-  agent" (the workspace and agent passes) and "delete every session this provider has that Paseo does
-  not" (the orphan sweep).
-- `server/provider-sessions-pi.ts` holds **everything pi-specific**: how a transcript is recognised,
-  where pi stores sessions, and how they are enumerated.
+## Structure
 
-Adding a provider means one new sibling module and one `case` in each `switch`; nothing else in the
-plugin changes.
+Eight small modules, one job each: nothing here polls, retries per item, or keeps a second source of
+truth.
 
-Switching a delete switch on makes the cleanup due on the next tick instead of waiting out the
-interval, so a deletion does not sit for a day after it was asked for.
-
-This is irreversible: after the cleanup the workspace, its agents and (while pi session files are on)
-the pi transcripts cannot be restored. Nothing in the plugin ever deletes project content, only
-records and the pi transcript.
+| File | Job |
+| --- | --- |
+| `index.server.ts` | wire settings → timer → RPC, and nothing else |
+| `server/cleanup.ts` | the due-timer, the state file, one snapshot, one plan, one pass |
+| `server/settings.ts` | in-memory settings document plus the environment overrides |
+| `server/registry.ts` | `workspaces.json` / `projects.json` reads and the removed-workspace ledger |
+| `server/pi-sessions.ts` | pi transcripts: delete one, sweep the orphans |
+| `server/daemon.ts` | `$PASEO_HOME`, the daemon client, the one agent listing |
+| `server/cli.ts` | `paseo agent delete` / `paseo project delete` |
+| `server/guard.ts`, `server/util.ts` | crash guards, atomic and serialized writes |
 
 ## Settings
 
-The plugin registers one host-scoped settings document (`auto-release`), so the app's plugin settings
-screen can change all of it; every value has a default and nothing has to be configured to work.
+The plugin registers one host-scoped settings document (`auto-release`, its stored id, so existing
+hosts keep their switches), so the app's plugin settings screen can change all of it; every value has
+a default and nothing has to be configured to work.
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
-| Auto-release | on | run the timer; off stops release and the automatic cleanup (the button still works) |
-| Tick every (minutes) | `15` | the single timer's cadence |
-| Grace (minutes) | `5` | a runtime touched this recently waits for the next tick (`0` releases on the tick) |
-| Cleanup every (hours) | `24` | how often the destructive phase may run |
+| Auto-cleanup | on | run the timer; off stops every automatic deletion (the button still works) |
+| Cleanup every (hours) | `24` | how long after a cleanup the next one comes due |
 | Delete pi session files | off | also delete the pi transcript when an agent is deleted; off deletes Paseo records only |
 | Delete archived workspaces | off | delete every archived workspace, with the agents inside it |
 | Delete archived agents | off | delete every archived agent, even in a workspace that is not archived |
-| Privacy cleanup | — | button: run every pass now — archived workspaces, agents and projects, plus orphan pi sessions while pi session files are on — without waiting for the cleanup interval |
+| Privacy cleanup | — | button: run every pass now — archived workspaces, agents and projects, plus orphan pi sessions while pi session files are on — without waiting for the interval |
 
 Values live in `~/.paseo/plugin-settings/agent-manager/auto-release.json` (`{ version, values }`, with the
-zod schema as the contract). An operator can override any of them from the daemon environment, and the
-environment wins — handy for a one-off purge or a quick timing experiment without touching the app. A
-value that is not a positive number is ignored:
+zod schema as the contract; a v1 or v2 document is migrated on read). An operator can override any of
+them from the daemon environment, and the environment wins — handy for a one-off purge or a quick
+timing experiment without touching the app. A value that is not a positive number is ignored:
 
 | Environment variable | Overrides |
 | --- | --- |
 | `PASEO_AGENT_MANAGER_ENABLED` | `1`/`0` — turn the whole timer off (or back on) without the app |
-| `PASEO_AGENT_MANAGER_SWEEP_INTERVAL_MS` | tick cadence in ms, minimum `5000` |
-| `PASEO_AGENT_MANAGER_GRACE_MINUTES` | grace in minutes |
 | `PASEO_AGENT_MANAGER_CLEANUP_INTERVAL_MS` | cleanup interval in ms, minimum `60000` |
 | `PASEO_AGENT_MANAGER_DELETE_PROVIDER_SESSIONS` | `1`/`0` — delete pi transcripts too |
 | `PASEO_AGENT_MANAGER_DELETE_ARCHIVED_WORKSPACES` | `1`/`0` — delete archived workspaces |
@@ -177,13 +180,13 @@ a `zh-CN` name and description for the plugin registry; Paseo itself does not re
 
 ### Earlier profiles
 
-Two earlier designs are kept as tags, not branches, because both are ancestors of this code: a host
-that wants one of them back checks it out and reloads — no rebuild.
+The release-era designs are kept as tags, not branches, because both are ancestors of this code: a
+host that wants one of them back checks it out and reloads — no rebuild.
 
 | Tag | What it does |
 | --- | --- |
-| `baseline-idle-10min` | upstream: a 10-minute idle window, a 15-minute sweep and a due timer |
-| `idle-1min-profile` | experiment: a 1-minute window with a 1-minute sweep |
+| `baseline-idle-10min` | the old release: a 10-minute idle window, a 15-minute sweep and a due timer |
+| `idle-1min-profile` | experiment: a 1-minute idle window with a 1-minute sweep |
 
 ```bash
 git checkout baseline-idle-10min && paseo reload
@@ -209,12 +212,11 @@ extra is installed: the plugin uses the daemon's own client, the session protoco
 The plugin's server output goes to the daemon's plugin log — `paseo plugin logs agent-manager`, or the
 plugin's log view in the app. It is ordinary stdout/stderr: whatever the server half prints, one entry
 per line, tagged `stdout` or `stderr` and timestamped (the client half prints to the app's own console
-instead). The tick writes a line when it actually did something:
+instead). The timer writes a line only when it actually did something:
 
 | When | Line |
 | --- | --- |
-| a sweep released runtimes | `释放了 3 个进程，当前系统 mem 52% swap 13%` |
-| a cleanup removed an archived workspace | `释放 归档workspace <name> 和里面 4 个agent，成功删除对应session 4 个` |
+| a cleanup removed an archived workspace | `删除 归档workspace <name> 和里面 4 个agent，成功删除对应session 4 个` |
 | a cleanup removed archived agents outside archived workspaces | `删除了 3 个归档agent（所在workspace未归档）` |
 | the privacy button removed archived projects | `删除了 2 个归档project` |
 | the privacy button removed unmanaged sessions | `删除 73 个 paseo无记录session` |

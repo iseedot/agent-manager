@@ -4,22 +4,24 @@ import { z } from "zod";
 /**
  * Host-scoped settings, all with defaults, editable in the app's plugin settings screen.
  *
- * `enabled` is the master timer: off stops the whole timer, but the settings screen's privacy
- * cleanup still runs. `deleteProviderSessions` is the only switch that touches a provider's own
- * files (pi today); with it off every deletion removes Paseo records only. The environment variables
- * documented in the README still win over anything stored here, so an operator can override a host
- * without the app.
+ * `autoCleanup` is the timer's master switch: off stops every automatic deletion, but the settings
+ * screen's privacy cleanup still runs. `deleteProviderSessions` is the only switch that touches a
+ * provider's own files (pi today); with it off every deletion removes Paseo records only. The
+ * environment variables documented in the README still win over anything stored here, so an operator
+ * can override a host without the app.
+ *
+ * The document id stays `auto-release`: it is the path the host stores the document at, so renaming
+ * it would orphan every existing host's saved switches.
  */
-export const autoReleaseSettings = defineSettings({
+export const autoCleanupSettings = defineSettings({
   id: "auto-release",
   scope: "host",
-  version: 2,
-  migrate: migrateFromV1,
+  version: 3,
+  migrate: migrateToV3,
   schema: z.object({
-    /** On: the timer releases runtimes and runs the cleanup. Off: neither runs; the button still does. */
-    enabled: z.boolean().default(true),
-    sweepIntervalMinutes: z.number().int().min(1).default(15),
-    graceMinutes: z.number().min(0).default(5),
+    /** On: the timer deletes what the switches name. Off: only the privacy button deletes. */
+    autoCleanup: z.boolean().default(true),
+    /** How often the automatic cleanup may run. The timer itself wakes up once an hour. */
     cleanupIntervalHours: z.number().min(1).default(24),
     /** Deep mode: also delete each removed agent's pi transcript. Off: Paseo records only. */
     deleteProviderSessions: z.boolean().default(false),
@@ -30,26 +32,25 @@ export const autoReleaseSettings = defineSettings({
   }),
 });
 
-export type AutoReleaseSettings = z.output<typeof autoReleaseSettings.schema>;
+export type AutoCleanupSettings = z.output<typeof autoCleanupSettings.schema>;
 
 /**
- * v1 had one `purgeArchivedWorkspaces` switch that deleted both archived workspaces and archived
- * agents, plus a separate orphan-session switch. The purge becomes both delete switches; the orphan
- * sweep is now part of the privacy button.
+ * v2 carried the release timer's cadence and grace window, which no longer exist; its `enabled`
+ * master switch becomes `autoCleanup`. v1 had one `purgeArchivedWorkspaces` switch that deleted both
+ * archived workspaces and archived agents, plus a separate orphan-session switch that the privacy
+ * button now covers.
  */
-function migrateFromV1(values: unknown): unknown {
+function migrateToV3(values: unknown): unknown {
   if (!values || typeof values !== "object" || Array.isArray(values)) {
     return values;
   }
-  const v1 = values as Record<string, unknown>;
-  const purge = v1.purgeArchivedWorkspaces === true;
+  const previous = values as Record<string, unknown>;
+  const purge = previous.purgeArchivedWorkspaces === true;
   return {
-    enabled: v1.enabled,
-    sweepIntervalMinutes: v1.sweepIntervalMinutes,
-    graceMinutes: v1.graceMinutes,
-    cleanupIntervalHours: v1.cleanupIntervalHours,
-    deleteProviderSessions: v1.deleteProviderSessions,
-    deleteArchivedWorkspaces: purge,
-    deleteArchivedAgents: purge,
+    autoCleanup: previous.autoCleanup ?? previous.enabled,
+    cleanupIntervalHours: previous.cleanupIntervalHours,
+    deleteProviderSessions: previous.deleteProviderSessions,
+    deleteArchivedWorkspaces: previous.deleteArchivedWorkspaces ?? purge,
+    deleteArchivedAgents: previous.deleteArchivedAgents ?? purge,
   };
 }

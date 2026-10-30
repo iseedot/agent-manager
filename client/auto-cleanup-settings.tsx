@@ -12,45 +12,23 @@ import {
 } from "@getpaseo/plugin/client/ui";
 
 import { runCleanupRpc } from "../shared/contracts";
-import { autoReleaseSettings } from "../shared/settings";
+import { autoCleanupSettings } from "../shared/settings";
 import { useMessages, type Translate } from "./messages";
 
-type Ready = Extract<SettingsState<typeof autoReleaseSettings.schema>, { status: "ready" }>;
+type Ready = Extract<SettingsState<typeof autoCleanupSettings.schema>, { status: "ready" }>;
 type Values = Ready["values"];
-
-const NUMBER_FIELDS: Array<{
-  key: "sweepIntervalMinutes" | "graceMinutes" | "cleanupIntervalHours";
-  labelKey: string;
-  hintKey: string;
-}> = [
-  {
-    key: "sweepIntervalMinutes",
-    labelKey: "tickLabel",
-    hintKey: "tickHint",
-  },
-  {
-    key: "graceMinutes",
-    labelKey: "graceLabel",
-    hintKey: "graceHint",
-  },
-  {
-    key: "cleanupIntervalHours",
-    labelKey: "cleanupLabel",
-    hintKey: "cleanupHint",
-  },
-];
 
 function parseNumber(text: string, fallback: number): number {
   const parsed = Number(text.replace(/[^0-9.]/g, ""));
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
-/** The three numbers are one document: edited together and saved against the displayed revision. */
-function Numbers({ settings, theme }: { settings: Ready; theme: PluginSurfaceProps["theme"] }) {
+/** The one number the cleanup has: how often the automatic pass may run. */
+function Schedule({ settings, theme }: { settings: Ready; theme: PluginSurfaceProps["theme"] }) {
   const { t } = useMessages();
   const [draft, setDraft] = useState<Values>(() => settings.values);
-  const change = useCallback((key: keyof Values, text: string) => {
-    setDraft((current) => ({ ...current, [key]: parseNumber(text, current[key] as number) }));
+  const change = useCallback((text: string) => {
+    setDraft((current) => ({ ...current, cleanupIntervalHours: parseNumber(text, current.cleanupIntervalHours) }));
   }, []);
   const save = useCallback(() => {
     void settings.save(draft, settings.revision);
@@ -58,19 +36,16 @@ function Numbers({ settings, theme }: { settings: Ready; theme: PluginSurfacePro
   const style = useMemo(() => ({ color: theme.colors.foregroundMuted }), [theme]);
   return (
     <SettingsCard>
-      {NUMBER_FIELDS.map((field) => (
-        <SettingsInput
-          key={field.key}
-          label={t(field.labelKey)}
-          hint={t(field.hintKey)}
-          initialValue={String(draft[field.key])}
-          disabled={settings.saving}
-          onChangeText={(text) => change(field.key, text)}
-        />
-      ))}
+      <SettingsInput
+        label={t("cleanupLabel")}
+        hint={t("cleanupHint")}
+        initialValue={String(draft.cleanupIntervalHours)}
+        disabled={settings.saving}
+        onChangeText={change}
+      />
       <SettingsAction
-        label={t("intervals")}
-        actionLabel={t("saveIntervals")}
+        label={t("schedule")}
+        actionLabel={t("saveSchedule")}
         disabled={settings.saving}
         onPress={save}
       />
@@ -170,7 +145,7 @@ function Controls({ settings, theme }: { settings: Ready; theme: PluginSurfacePr
   const toggle = useCallback(
     (
       key:
-        | "enabled"
+        | "autoCleanup"
         | "deleteProviderSessions"
         | "deleteArchivedWorkspaces"
         | "deleteArchivedAgents",
@@ -180,7 +155,7 @@ function Controls({ settings, theme }: { settings: Ready; theme: PluginSurfacePr
     },
     [settings],
   );
-  const enabled = settings.values.enabled;
+  const enabled = settings.values.autoCleanup;
   const sessions = settings.values.deleteProviderSessions;
   const workspaces = settings.values.deleteArchivedWorkspaces;
   const agents = settings.values.deleteArchivedAgents;
@@ -188,11 +163,11 @@ function Controls({ settings, theme }: { settings: Ready; theme: PluginSurfacePr
     <SettingsSection title={t("title")}>
       <SettingsCard>
         <SettingsSwitch
-          label={t("autoRelease")}
-          hint={t("autoReleaseHint")}
+          label={t("autoCleanup")}
+          hint={t("autoCleanupHint")}
           value={enabled}
           disabled={settings.saving}
-          onValueChange={(value) => toggle("enabled", value)}
+          onValueChange={(value) => toggle("autoCleanup", value)}
         />
         <SettingsSwitch
           label={t("deletePi")}
@@ -222,14 +197,14 @@ function Controls({ settings, theme }: { settings: Ready; theme: PluginSurfacePr
       <Text style={style}>
         {workspaces || agents ? t("archivedWillDelete") : t("archivedKept")}
       </Text>
-      <Numbers key={settings.revision} settings={settings} theme={theme} />
+      <Schedule key={settings.revision} settings={settings} theme={theme} />
     </SettingsSection>
   );
 }
 
-export function AutoReleaseSettingsScreen({ theme }: PluginSurfaceProps) {
+export function AutoCleanupSettingsScreen({ theme }: PluginSurfaceProps) {
   const { t } = useMessages();
-  const settings = useSettings(autoReleaseSettings);
+  const settings = useSettings(autoCleanupSettings);
   const style = useMemo(() => ({ color: theme.colors.foreground }), [theme]);
   if (settings.status === "loading") {
     return (
