@@ -19,6 +19,11 @@ import { describe, str } from "./util";
  * one means teaching `sessionFileFor` and `sweepOrphanSessions` about it, not changing the cleanup.
  */
 
+/** pi's state directory: `~/.pi/agent`, or wherever `PI_CODING_AGENT_DIR` points. */
+export function piAgentDir(env: NodeJS.ProcessEnv = process.env): string {
+  return env.PI_CODING_AGENT_DIR?.trim() || join(homedir(), ".pi", "agent");
+}
+
 /** The two fields a session lookup needs; an `AgentRecord` satisfies this. */
 export interface AgentRef {
   id: string;
@@ -128,7 +133,7 @@ async function sessionRoots(recorded: ReadonlySet<string>): Promise<string[]> {
   if (configured) {
     roots.add(configured);
   }
-  const agentDir = process.env.PI_CODING_AGENT_DIR?.trim() || join(homedir(), ".pi", "agent");
+  const agentDir = piAgentDir();
   roots.add(join(agentDir, "sessions"));
   const setting = await absoluteSessionDirSetting(join(agentDir, "settings.json"));
   if (setting) {

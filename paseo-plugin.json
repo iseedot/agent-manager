@@ -1,11 +1,11 @@
 {
   "id": "agent-manager",
-  "name": "Agent Manager",
-  "description": "Deletes archived workspaces, agents and projects on a daily timer, plus orphan provider sessions.",
+  "name": "Agent Manager & Usage",
+  "description": "Daily cleanup of archived workspaces, agents and projects, plus the OpenCode Go quota card for the subscription pi is logged into.",
   "translations": {
     "zh-CN": {
-      "name": "Agent 管理器",
-      "description": "每天定时清理归档工作区、agent、project，以及孤立的 provider 会话。"
+      "name": "Agent 管理器 + 用量",
+      "description": "每天定时清理归档工作区、agent、project，并为 pi 登录的 OpenCode Go 提供用量卡片。"
     }
   },
   "requirements": {

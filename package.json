@@ -1,12 +1,14 @@
 {
   "name": "paseo-plugin-agent-manager",
   "version": "0.6.1",
-  "description": "Paseo plugin: a daily timer that deletes archived workspaces, agents and projects, plus orphan provider-session cleanup.",
+  "description": "Paseo plugin: a daily timer that deletes archived workspaces, agents and projects, plus orphan provider-session cleanup and the OpenCode Go usage card for pi.",
   "license": "MIT",
   "keywords": [
     "paseo",
     "paseo-plugin",
-    "agents"
+    "agents",
+    "usage",
+    "opencode"
   ],
   "files": [
     "paseo-plugin.json",

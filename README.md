@@ -1,8 +1,14 @@
 # paseo-agent-manager
 
-A Paseo plugin with one job: **Auto-cleanup**. Archived workspaces, agents and projects are deleted
-on a daily timer, whether or not the app is open, and orphan pi session files are swept with them
-(see [Auto-cleanup](#auto-cleanup)).
+One Paseo plugin with two jobs, so they share a single plugin process:
+
+1. **Auto-cleanup** — archived workspaces, agents and projects are deleted on a daily timer, whether
+   or not the app is open, and orphan pi session files are swept with them
+   (see [Auto-cleanup](#auto-cleanup)).
+2. **OpenCode Go usage** — a quota card in Paseo's Usage view for the subscription pi is logged into
+   (see [Usage source](#usage-source)). This was the separate `pi-opencode-go-usage` plugin until the
+   two were merged; the plugin id and the usage-source id are unchanged, so stored settings, the
+   cleanup state and cached usage accounts all carry over.
 
 The only client contribution is the **Auto-cleanup settings screen** (Settings → Plugins →
 agent-manager): the switches, the schedule and one destructive button. The composer pill, the tab
@@ -140,7 +146,23 @@ truth.
 | `server/pi-sessions.ts` | pi transcripts: delete one, sweep the orphans |
 | `server/daemon.ts` | `$PASEO_HOME`, the daemon client, the one agent listing |
 | `server/cli.ts` | `paseo agent delete` / `paseo project delete` |
+| `server/usage-source.ts` | the OpenCode Go quota source: read pi's login store, ask the API |
 | `server/guard.ts`, `server/util.ts` | crash guards, atomic and serialized writes |
+
+## Usage source
+
+Paseo already ships an `opencode-go` usage source, but it reads the OpenCode CLI's login store
+(`~/.local/share/opencode/auth.json`, entry `{ type: "api", key }`). pi keeps the same provider in its
+own store (`<agent-dir>/auth.json`, entry `{ type: "api_key", key }`), which the built-in source never
+looks at. This plugin registers a second source, `pi-opencode-go`, that reads pi's store, calls
+`https://opencode.ai/zen/go/v1/usage` and shows the **Rolling**, **Weekly** and **Monthly** windows.
+
+- Read-only: it reads one file and makes one HTTPS request, and writes nothing back.
+- The API key is never logged, never part of a report and never stored. The daemon only sees a stable
+  hash of the login-store path as the account key.
+- The quota is account-wide rather than per session, so only a global discovery is offered, and the
+  store is re-read on every fetch — a pi re-login takes effect without rediscovery.
+- `PI_CODING_AGENT_DIR` moves the store; otherwise it is `$HOME/.pi/agent`.
 
 ## Settings
 
